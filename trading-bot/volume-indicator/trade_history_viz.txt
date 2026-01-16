@@ -1,0 +1,514 @@
+//+------------------------------------------------------------------+
+//|                          TradeHistoryVisualization.mq5           |
+//|                   Visual Signal History on Chart                  |
+//|              Arrows, Lines, Labels, Win/Loss Display              |
+//+------------------------------------------------------------------+
+#property copyright "Trade History Visualization"
+#property version   "1.00"
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots 0
+
+//--- Input parameters
+input group "=== Visualization Settings ==="
+input bool     InpShowEntryArrows = true;      // Show Entry Arrows
+input bool     InpShowExitArrows = true;       // Show Exit Arrows
+input bool     InpShowTradingLines = true;     // Show TP/SL Lines
+input bool     InpShowPipsLabels = true;       // Show Pips Labels
+input bool     InpShowStrengthBars = true;     // Show Signal Strength Bars
+input int      InpMaxHistoryBars = 500;        // Max History Bars
+
+input group "=== Arrow Settings ==="
+input int      InpBuyArrowCode = 233;          // Buy Arrow Code (233=up)
+input int      InpSellArrowCode = 234;         // Sell Arrow Code (234=down)
+input int      InpExitArrowCode = 251;         // Exit Arrow Code (251=square)
+input int      InpArrowSize = 3;               // Arrow Size
+input color    InpBuyColor = clrLimeGreen;     // Buy Signal Color
+input color    InpSellColor = clrOrangeRed;    // Sell Signal Color
+input color    InpWinColor = clrDodgerBlue;    // Win Exit Color
+input color    InpLossColor = clrRed;          // Loss Exit Color
+
+input group "=== Line Settings ==="
+input ENUM_LINE_STYLE InpLineStyle = STYLE_DOT; // TP/SL Line Style
+input int      InpLineWidth = 1;               // Line Width
+input color    InpTPLineColor = clrLimeGreen;  // Take Profit Color
+input color    InpSLLineColor = clrOrangeRed;  // Stop Loss Color
+
+input group "=== Label Settings ==="
+input int      InpLabelFontSize = 8;           // Label Font Size
+input color    InpWinLabelColor = clrLimeGreen;// Win Label Color
+input color    InpLossLabelColor = clrOrangeRed; // Loss Label Color
+input bool     InpShowDateTime = true;         // Show Date/Time
+input bool     InpShowRiskLevel = true;        // Show Risk Level
+
+input group "=== Filtering ==="
+input int      InpMinStrengthToShow = 50;      // Min Strength to Display
+input bool     InpShowOnlyWins = false;        // Show Only Wins
+input bool     InpShowOnlyLosses = false;      // Show Only Losses
+input bool     InpHighlightHighRisk = true;    // Highlight High Risk (4-5)
+
+input group "=== Performance ==="
+input bool     InpAutoCleanOldObjects = true;  // Auto Clean Old Objects
+input int      InpMaxObjectsOnChart = 200;     // Max Objects on Chart
+
+//--- Structures
+struct VisualTrade
+{
+   datetime entryTime;
+   datetime exitTime;
+   string signalType;
+   double entryPrice;
+   double exitPrice;
+   double pips;
+   int strength;
+   int riskLevel;
+   bool isWin;
+   bool isClosed;
+   string exitReason;
+   string entryArrowName;
+   string exitArrowName;
+   string tpLineName;
+   string slLineName;
+   string labelName;
+};
+
+//--- Global variables
+string objPrefix = "TradeViz_";
+VisualTrade visualTrades[];
+int objectCount = 0;
+
+//+------------------------------------------------------------------+
+//| Custom indicator initialization                                  |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   Print("=== Trade History Visualization Initialization ===");
+   
+   ArrayResize(visualTrades, 0);
+   
+   //--- Clean old objects on start
+   if(InpAutoCleanOldObjects)
+      CleanAllObjects();
+   
+   Print("✓ Trade History Visualization Ready");
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator deinitialization                                |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   //--- Optionally clean all visualization objects
+   // CleanAllObjects();
+   
+   Print("Trade History Visualization deinitialized");
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator iteration                                       |
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+{
+   //--- Redraw if needed
+   if(prev_calculated == 0)
+      RedrawAllTrades();
+   
+   return(rates_total);
+}
+
+//+------------------------------------------------------------------+
+//| Add new trade to visualization                                   |
+//+------------------------------------------------------------------+
+void AddTradeVisualization(datetime entryTime, string signalType, double entryPrice, 
+                           int strength, int riskLevel)
+{
+   if(strength < InpMinStrengthToShow)
+      return;
+   
+   int newSize = ArraySize(visualTrades) + 1;
+   ArrayResize(visualTrades, newSize);
+   
+   visualTrades[newSize-1].entryTime = entryTime;
+   visualTrades[newSize-1].signalType = signalType;
+   visualTrades[newSize-1].entryPrice = entryPrice;
+   visualTrades[newSize-1].strength = strength;
+   visualTrades[newSize-1].riskLevel = riskLevel;
+   visualTrades[newSize-1].isClosed = false;
+   
+   //--- Draw entry arrow
+   if(InpShowEntryArrows)
+      DrawEntryArrow(newSize-1);
+   
+   //--- Draw TP/SL lines
+   if(InpShowTradingLines)
+      DrawTPSLLines(newSize-1);
+   
+   //--- Draw strength bar
+   if(InpShowStrengthBars)
+      DrawStrengthBar(newSize-1);
+   
+   //--- Manage object count
+   ManageObjectCount();
+}
+
+//+------------------------------------------------------------------+
+//| Update trade when closed                                         |
+//+------------------------------------------------------------------+
+void UpdateTradeExit(int tradeIndex, datetime exitTime, double exitPrice, 
+                     double pips, bool isWin, string exitReason)
+{
+   if(tradeIndex < 0 || tradeIndex >= ArraySize(visualTrades))
+      return;
+   
+   visualTrades[tradeIndex].exitTime = exitTime;
+   visualTrades[tradeIndex].exitPrice = exitPrice;
+   visualTrades[tradeIndex].pips = pips;
+   visualTrades[tradeIndex].isWin = isWin;
+   visualTrades[tradeIndex].isClosed = true;
+   visualTrades[tradeIndex].exitReason = exitReason;
+   
+   //--- Check filters
+   if(InpShowOnlyWins && !isWin)
+      return;
+   if(InpShowOnlyLosses && isWin)
+      return;
+   
+   //--- Draw exit arrow
+   if(InpShowExitArrows)
+      DrawExitArrow(tradeIndex);
+   
+   //--- Draw result label
+   if(InpShowPipsLabels)
+      DrawResultLabel(tradeIndex);
+   
+   //--- Remove TP/SL lines
+   if(InpShowTradingLines)
+      RemoveTPSLLines(tradeIndex);
+}
+
+//+------------------------------------------------------------------+
+//| Draw Entry Arrow                                                 |
+//+------------------------------------------------------------------+
+void DrawEntryArrow(int index)
+{
+   string name = objPrefix + "Entry_" + IntegerToString(index) + "_" + 
+                 TimeToString(visualTrades[index].entryTime);
+   
+   visualTrades[index].entryArrowName = name;
+   
+   int arrowCode = (visualTrades[index].signalType == "BUY") ? InpBuyArrowCode : InpSellArrowCode;
+   color arrowColor = (visualTrades[index].signalType == "BUY") ? InpBuyColor : InpSellColor;
+   
+   //--- Highlight high risk
+   if(InpHighlightHighRisk && visualTrades[index].riskLevel >= 4)
+      arrowColor = clrYellow;
+   
+   ObjectCreate(0, name, OBJ_ARROW, 0, visualTrades[index].entryTime, visualTrades[index].entryPrice);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, arrowCode);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, arrowColor);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, InpArrowSize);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+   
+   //--- Add tooltip
+   string tooltip = visualTrades[index].signalType + " Signal\n";
+   tooltip += "Strength: " + IntegerToString(visualTrades[index].strength) + "%\n";
+   tooltip += "Risk: " + IntegerToString(visualTrades[index].riskLevel) + "/5\n";
+   tooltip += "Price: " + DoubleToString(visualTrades[index].entryPrice, _Digits);
+   ObjectSetString(0, name, OBJPROP_TEXT, tooltip);
+   
+   objectCount++;
+}
+
+//+------------------------------------------------------------------+
+//| Draw Exit Arrow                                                  |
+//+------------------------------------------------------------------+
+void DrawExitArrow(int index)
+{
+   string name = objPrefix + "Exit_" + IntegerToString(index) + "_" + 
+                 TimeToString(visualTrades[index].exitTime);
+   
+   visualTrades[index].exitArrowName = name;
+   
+   color arrowColor = visualTrades[index].isWin ? InpWinColor : InpLossColor;
+   
+   ObjectCreate(0, name, OBJ_ARROW, 0, visualTrades[index].exitTime, visualTrades[index].exitPrice);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, InpExitArrowCode);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, arrowColor);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, InpArrowSize);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+   
+   //--- Add tooltip
+   string tooltip = visualTrades[index].exitReason + "\n";
+   tooltip += (visualTrades[index].isWin ? "WIN: +" : "LOSS: ") + DoubleToString(visualTrades[index].pips, 1) + " pips\n";
+   tooltip += "Exit: " + DoubleToString(visualTrades[index].exitPrice, _Digits);
+   ObjectSetString(0, name, OBJPROP_TEXT, tooltip);
+   
+   objectCount++;
+}
+
+//+------------------------------------------------------------------+
+//| Draw TP/SL Lines                                                 |
+//+------------------------------------------------------------------+
+void DrawTPSLLines(int index)
+{
+   double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   double tpDistance = 50 * point * 10; // Default 50 pips
+   double slDistance = 30 * point * 10; // Default 30 pips
+   
+   double tpPrice, slPrice;
+   
+   if(visualTrades[index].signalType == "BUY")
+   {
+      tpPrice = visualTrades[index].entryPrice + tpDistance;
+      slPrice = visualTrades[index].entryPrice - slDistance;
+   }
+   else
+   {
+      tpPrice = visualTrades[index].entryPrice - tpDistance;
+      slPrice = visualTrades[index].entryPrice + slDistance;
+   }
+   
+   datetime startTime = visualTrades[index].entryTime;
+   datetime endTime = startTime + PeriodSeconds(PERIOD_CURRENT) * 100;
+   
+   //--- TP Line
+   string tpName = objPrefix + "TP_" + IntegerToString(index);
+   visualTrades[index].tpLineName = tpName;
+   
+   ObjectCreate(0, tpName, OBJ_TREND, 0, startTime, tpPrice, endTime, tpPrice);
+   ObjectSetInteger(0, tpName, OBJPROP_COLOR, InpTPLineColor);
+   ObjectSetInteger(0, tpName, OBJPROP_STYLE, InpLineStyle);
+   ObjectSetInteger(0, tpName, OBJPROP_WIDTH, InpLineWidth);
+   ObjectSetInteger(0, tpName, OBJPROP_RAY_RIGHT, false);
+   ObjectSetInteger(0, tpName, OBJPROP_BACK, true);
+   ObjectSetInteger(0, tpName, OBJPROP_SELECTABLE, false);
+   
+   //--- SL Line
+   string slName = objPrefix + "SL_" + IntegerToString(index);
+   visualTrades[index].slLineName = slName;
+   
+   ObjectCreate(0, slName, OBJ_TREND, 0, startTime, slPrice, endTime, slPrice);
+   ObjectSetInteger(0, slName, OBJPROP_COLOR, InpSLLineColor);
+   ObjectSetInteger(0, slName, OBJPROP_STYLE, InpLineStyle);
+   ObjectSetInteger(0, slName, OBJPROP_WIDTH, InpLineWidth);
+   ObjectSetInteger(0, slName, OBJPROP_RAY_RIGHT, false);
+   ObjectSetInteger(0, slName, OBJPROP_BACK, true);
+   ObjectSetInteger(0, slName, OBJPROP_SELECTABLE, false);
+   
+   objectCount += 2;
+}
+
+//+------------------------------------------------------------------+
+//| Remove TP/SL Lines                                               |
+//+------------------------------------------------------------------+
+void RemoveTPSLLines(int index)
+{
+   if(visualTrades[index].tpLineName != "")
+   {
+      ObjectDelete(0, visualTrades[index].tpLineName);
+      objectCount--;
+   }
+   
+   if(visualTrades[index].slLineName != "")
+   {
+      ObjectDelete(0, visualTrades[index].slLineName);
+      objectCount--;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Draw Result Label                                                |
+//+------------------------------------------------------------------+
+void DrawResultLabel(int index)
+{
+   string name = objPrefix + "Label_" + IntegerToString(index);
+   visualTrades[index].labelName = name;
+   
+   //--- Calculate label position (between entry and exit)
+   datetime labelTime = visualTrades[index].entryTime + 
+                        (visualTrades[index].exitTime - visualTrades[index].entryTime) / 2;
+   
+   double labelPrice = (visualTrades[index].entryPrice + visualTrades[index].exitPrice) / 2;
+   
+   //--- Build label text
+   string labelText = "";
+   if(visualTrades[index].isWin)
+      labelText = "+" + DoubleToString(visualTrades[index].pips, 1);
+   else
+      labelText = DoubleToString(visualTrades[index].pips, 1);
+   
+   if(InpShowRiskLevel)
+      labelText += " [R" + IntegerToString(visualTrades[index].riskLevel) + "]";
+   
+   if(InpShowDateTime)
+      labelText += "\n" + TimeToString(visualTrades[index].exitTime, TIME_MINUTES);
+   
+   color labelColor = visualTrades[index].isWin ? InpWinLabelColor : InpLossLabelColor;
+   
+   ObjectCreate(0, name, OBJ_TEXT, 0, labelTime, labelPrice);
+   ObjectSetString(0, name, OBJPROP_TEXT, labelText);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, labelColor);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, InpLabelFontSize);
+   ObjectSetString(0, name, OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_CENTER);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   
+   objectCount++;
+}
+
+//+------------------------------------------------------------------+
+//| Draw Strength Bar                                                |
+//+------------------------------------------------------------------+
+void DrawStrengthBar(int index)
+{
+   string name = objPrefix + "Strength_" + IntegerToString(index);
+   
+   double barHeight = 0.0005; // Small bar height
+   double barTop = visualTrades[index].entryPrice + barHeight;
+   double barBottom = visualTrades[index].entryPrice;
+   
+   datetime startTime = visualTrades[index].entryTime;
+   datetime endTime = startTime + PeriodSeconds(PERIOD_CURRENT) * 
+                      (visualTrades[index].strength / 10);
+   
+   color barColor = (visualTrades[index].strength >= 75) ? clrLimeGreen :
+                    (visualTrades[index].strength >= 60) ? clrGold : clrOrange;
+   
+   ObjectCreate(0, name, OBJ_RECTANGLE, 0, startTime, barTop, endTime, barBottom);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, barColor);
+   ObjectSetInteger(0, name, OBJPROP_FILL, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   
+   objectCount++;
+}
+
+//+------------------------------------------------------------------+
+//| Redraw All Trades                                                |
+//+------------------------------------------------------------------+
+void RedrawAllTrades()
+{
+   CleanAllObjects();
+   
+   for(int i = 0; i < ArraySize(visualTrades); i++)
+   {
+      if(visualTrades[i].strength < InpMinStrengthToShow)
+         continue;
+      
+      if(InpShowEntryArrows)
+         DrawEntryArrow(i);
+      
+      if(!visualTrades[i].isClosed && InpShowTradingLines)
+         DrawTPSLLines(i);
+      
+      if(visualTrades[i].isClosed)
+      {
+         if(InpShowExitArrows)
+            DrawExitArrow(i);
+         if(InpShowPipsLabels)
+            DrawResultLabel(i);
+      }
+      
+      if(InpShowStrengthBars && !visualTrades[i].isClosed)
+         DrawStrengthBar(i);
+   }
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Manage Object Count                                              |
+//+------------------------------------------------------------------+
+void ManageObjectCount()
+{
+   if(objectCount > InpMaxObjectsOnChart && InpAutoCleanOldObjects)
+   {
+      //--- Remove oldest objects
+      datetime oldestTime = TimeCurrent() - PeriodSeconds(PERIOD_CURRENT) * InpMaxHistoryBars;
+      
+      for(int i = ArraySize(visualTrades) - 1; i >= 0; i--)
+      {
+         if(visualTrades[i].entryTime < oldestTime)
+         {
+            RemoveTradeObjects(i);
+            ArrayRemove(visualTrades, i, 1);
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Remove Trade Objects                                             |
+//+------------------------------------------------------------------+
+void RemoveTradeObjects(int index)
+{
+   if(visualTrades[index].entryArrowName != "")
+   {
+      ObjectDelete(0, visualTrades[index].entryArrowName);
+      objectCount--;
+   }
+   
+   if(visualTrades[index].exitArrowName != "")
+   {
+      ObjectDelete(0, visualTrades[index].exitArrowName);
+      objectCount--;
+   }
+   
+   RemoveTPSLLines(index);
+   
+   if(visualTrades[index].labelName != "")
+   {
+      ObjectDelete(0, visualTrades[index].labelName);
+      objectCount--;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Clean All Objects                                                |
+//+------------------------------------------------------------------+
+void CleanAllObjects()
+{
+   int total = ObjectsTotal(0);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i);
+      if(StringFind(name, objPrefix) == 0)
+         ObjectDelete(0, name);
+   }
+   
+   objectCount = 0;
+}
+
+//+------------------------------------------------------------------+
+//| Public function to add trade (call from other indicators)        |
+//+------------------------------------------------------------------+
+void VisualizeSignal(datetime entryTime, string signalType, double entryPrice, 
+                     int strength, int riskLevel)
+{
+   AddTradeVisualization(entryTime, signalType, entryPrice, strength, riskLevel);
+}
+
+//+------------------------------------------------------------------+
+//| Public function to update exit (call when trade closes)          |
+//+------------------------------------------------------------------+
+void VisualizeExit(int tradeIndex, datetime exitTime, double exitPrice, 
+                   double pips, bool isWin, string exitReason)
+{
+   UpdateTradeExit(tradeIndex, exitTime, exitPrice, pips, isWin, exitReason);
+}
+//+------------------------------------------------------------------+

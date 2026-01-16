@@ -1,0 +1,57 @@
+{
+  "version": "1.0.0",
+  "financial": [
+    {
+      "id": "I-001",
+      "rule": "positionNotional <= balance * MAX_POSITION_PERCENT / 100",
+      "severity": "CRITICAL"
+    },
+    {
+      "id": "I-002", 
+      "rule": "totalExposure <= balance * MAX_TOTAL_EXPOSURE / 100",
+      "severity": "CRITICAL"
+    },
+    {
+      "id": "I-003",
+      "rule": "leverage >= MIN_LEVERAGE && leverage <= MAX_LEVERAGE",
+      "severity": "HIGH"
+    },
+    {
+      "id": "I-004",
+      "rule": "position.stopLossOrderId !== null",
+      "severity": "CRITICAL"
+    },
+    {
+      "id": "I-005",
+      "rule": "liquidationBuffer >= MIN_LIQUIDATION_BUFFER",
+      "severity": "HIGH"
+    },
+    {
+      "id": "I-006",
+      "rule": "dailyDrawdown <= MAX_DAILY_DRAWDOWN",
+      "severity": "CRITICAL"
+    },
+    {
+      "id": "I-007",
+      "rule": "!apiPermissions.includes('withdrawal')",
+      "severity": "CRITICAL"
+    }
+  ],
+  "system": [
+    {
+      "id": "I-008",
+      "rule": "mode === 'paper' || wsConnected === true",
+      "severity": "CRITICAL"
+    },
+    {
+      "id": "I-009",
+      "rule": "Date.now() - lastHeartbeat < HEARTBEAT_TIMEOUT_MS",
+      "severity": "HIGH"
+    },
+    {
+      "id": "I-010",
+      "rule": "requestsInWindow <= MAX_REQUESTS_PER_WINDOW",
+      "severity": "MEDIUM"
+    }
+  ]
+}

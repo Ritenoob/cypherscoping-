@@ -1,0 +1,727 @@
+//+------------------------------------------------------------------+
+//|                          PerformanceStatsPanel.mq5               |
+//|                    Signal Performance Statistics Tracker          |
+//|              Win Rate, Accuracy, Profit Factor Analysis           |
+//+------------------------------------------------------------------+
+#property copyright "Performance Statistics Panel"
+#property version   "1.00"
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots 0
+
+//--- Input parameters
+input group "=== Performance Tracking ==="
+input int      InpTrackingPeriodDays = 30;     // Tracking Period (days)
+input int      InpMinPipsForWin = 10;          // Min Pips for Win
+input int      InpStopLossPips = 30;           // Stop Loss (pips)
+input int      InpTakeProfitPips = 50;         // Take Profit (pips)
+input bool     InpTrackByTimeframe = true;     // Track by Timeframe
+input bool     InpTrackByRiskLevel = true;     // Track by Risk Level
+
+input group "=== Signal Filtering ==="
+input int      InpMinSignalStrength = 60;      // Min Signal Strength
+input int      InpMaxRiskLevel = 4;            // Max Risk Level to Track
+
+input group "=== Panel Settings ==="
+input int      InpPanelX = 20;                 // Panel X Position
+input int      InpPanelY = 50;                 // Panel Y Position
+input color    InpPanelColor = C'15,15,25';    // Panel Background
+input color    InpHeaderColor = clrGold;       // Header Color
+input int      InpFontSize = 8;                // Font Size
+input bool     InpShowDetailedStats = true;    // Show Detailed Stats
+
+input group "=== Data Management ==="
+input bool     InpAutoSaveStats = true;        // Auto Save Stats
+input int      InpSaveIntervalMinutes = 60;    // Save Interval (minutes)
+input bool     InpLoadPreviousData = true;     // Load Previous Session
+
+//--- Structures
+struct SignalRecord
+{
+   datetime entryTime;
+   datetime exitTime;
+   string signalType;        // "BUY", "SELL"
+   int strength;
+   int riskLevel;
+   string timeframe;
+   double entryPrice;
+   double exitPrice;
+   double pips;
+   bool isWin;
+   bool isClosed;
+   string exitReason;        // "TP", "SL", "Manual", "Timeout"
+};
+
+struct PerformanceStats
+{
+   int totalSignals;
+   int closedTrades;
+   int wins;
+   int losses;
+   double winRate;
+   double totalPips;
+   double avgWinPips;
+   double avgLossPips;
+   double profitFactor;
+   double sharpeRatio;
+   int currentStreak;
+   int maxWinStreak;
+   int maxLoseStreak;
+   double largestWin;
+   double largestLoss;
+   int profitableHours[24];  // Best trading hours
+};
+
+struct TimeframeStats
+{
+   string name;
+   int signals;
+   int wins;
+   double winRate;
+   double avgPips;
+};
+
+struct RiskLevelStats
+{
+   int level;
+   int signals;
+   int wins;
+   double winRate;
+   double avgPips;
+};
+
+//--- Global variables
+string objPrefix = "PerfStats_";
+SignalRecord signalHistory[];
+PerformanceStats overallStats;
+TimeframeStats tfStats[4];
+RiskLevelStats riskStats[5];
+datetime lastSaveTime = 0;
+int fileHandle = INVALID_HANDLE;
+string dataFile;
+
+//+------------------------------------------------------------------+
+//| Custom indicator initialization                                  |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   Print("=== Performance Statistics Panel Initialization ===");
+   
+   //--- Initialize arrays
+   ArrayResize(signalHistory, 0);
+   
+   //--- Initialize timeframe stats
+   string tfNames[4] = {"M5", "M15", "H1", "H2"};
+   for(int i = 0; i < 4; i++)
+   {
+      tfStats[i].name = tfNames[i];
+      tfStats[i].signals = 0;
+      tfStats[i].wins = 0;
+      tfStats[i].winRate = 0;
+      tfStats[i].avgPips = 0;
+   }
+   
+   //--- Initialize risk level stats
+   for(int i = 0; i < 5; i++)
+   {
+      riskStats[i].level = i + 1;
+      riskStats[i].signals = 0;
+      riskStats[i].wins = 0;
+      riskStats[i].winRate = 0;
+      riskStats[i].avgPips = 0;
+   }
+   
+   //--- Initialize overall stats
+   ResetStats(overallStats);
+   
+   //--- Load previous data
+   dataFile = "PerformanceStats_" + Symbol() + ".dat";
+   if(InpLoadPreviousData)
+      LoadStatistics();
+   
+   //--- Create panel
+   CreateStatsPanel();
+   
+   //--- Set timer
+   EventSetTimer(60); // Update every minute
+   
+   Print("✓ Performance Statistics Panel Ready");
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator deinitialization                                |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   //--- Save stats on exit
+   if(InpAutoSaveStats)
+      SaveStatistics();
+   
+   //--- Delete panel objects
+   ObjectsDeleteAll(0, objPrefix);
+   
+   EventKillTimer();
+   Print("Performance Statistics Panel deinitialized");
+}
+
+//+------------------------------------------------------------------+
+//| Timer function                                                    |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   //--- Update open positions
+   UpdateOpenSignals();
+   
+   //--- Calculate statistics
+   CalculateStatistics();
+   
+   //--- Update panel
+   UpdateStatsPanel();
+   
+   //--- Auto-save
+   if(InpAutoSaveStats && TimeCurrent() - lastSaveTime >= InpSaveIntervalMinutes * 60)
+   {
+      SaveStatistics();
+      lastSaveTime = TimeCurrent();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator iteration                                       |
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+{
+   return(rates_total);
+}
+
+//+------------------------------------------------------------------+
+//| Add new signal to tracking                                       |
+//+------------------------------------------------------------------+
+void AddSignal(string signalType, int strength, int riskLevel, string timeframe, double entryPrice)
+{
+   if(strength < InpMinSignalStrength || riskLevel > InpMaxRiskLevel)
+      return;
+   
+   int newSize = ArraySize(signalHistory) + 1;
+   ArrayResize(signalHistory, newSize);
+   
+   signalHistory[newSize-1].entryTime = TimeCurrent();
+   signalHistory[newSize-1].signalType = signalType;
+   signalHistory[newSize-1].strength = strength;
+   signalHistory[newSize-1].riskLevel = riskLevel;
+   signalHistory[newSize-1].timeframe = timeframe;
+   signalHistory[newSize-1].entryPrice = entryPrice;
+   signalHistory[newSize-1].isClosed = false;
+   
+   Print("Signal tracked: ", signalType, " @ ", DoubleToString(entryPrice, _Digits), 
+         " Strength: ", strength, " Risk: ", riskLevel);
+}
+
+//+------------------------------------------------------------------+
+//| Update open signals - check if TP/SL hit                         |
+//+------------------------------------------------------------------+
+void UpdateOpenSignals()
+{
+   double currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   int digits = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+   
+   for(int i = 0; i < ArraySize(signalHistory); i++)
+   {
+      if(signalHistory[i].isClosed)
+         continue;
+      
+      double slDistance = InpStopLossPips * point * 10;
+      double tpDistance = InpTakeProfitPips * point * 10;
+      
+      bool hitTP = false;
+      bool hitSL = false;
+      
+      if(signalHistory[i].signalType == "BUY")
+      {
+         double slPrice = signalHistory[i].entryPrice - slDistance;
+         double tpPrice = signalHistory[i].entryPrice + tpDistance;
+         
+         if(currentPrice <= slPrice)
+            hitSL = true;
+         else if(currentPrice >= tpPrice)
+            hitTP = true;
+      }
+      else if(signalHistory[i].signalType == "SELL")
+      {
+         double slPrice = signalHistory[i].entryPrice + slDistance;
+         double tpPrice = signalHistory[i].entryPrice - tpDistance;
+         
+         if(currentPrice >= slPrice)
+            hitSL = true;
+         else if(currentPrice <= tpPrice)
+            hitTP = true;
+      }
+      
+      //--- Close signal if TP or SL hit
+      if(hitTP || hitSL)
+      {
+         signalHistory[i].exitTime = TimeCurrent();
+         signalHistory[i].exitPrice = currentPrice;
+         signalHistory[i].isClosed = true;
+         signalHistory[i].exitReason = hitTP ? "TP" : "SL";
+         signalHistory[i].isWin = hitTP;
+         
+         double priceDiff = MathAbs(signalHistory[i].exitPrice - signalHistory[i].entryPrice);
+         signalHistory[i].pips = priceDiff / (point * 10);
+         if(!hitTP)
+            signalHistory[i].pips = -signalHistory[i].pips;
+         
+         Print("Signal closed: ", signalHistory[i].exitReason, " Pips: ", 
+               DoubleToString(signalHistory[i].pips, 1));
+      }
+      
+      //--- Check timeout (24 hours)
+      if(TimeCurrent() - signalHistory[i].entryTime > 86400 && !signalHistory[i].isClosed)
+      {
+         signalHistory[i].exitTime = TimeCurrent();
+         signalHistory[i].exitPrice = currentPrice;
+         signalHistory[i].isClosed = true;
+         signalHistory[i].exitReason = "Timeout";
+         
+         double priceDiff = currentPrice - signalHistory[i].entryPrice;
+         if(signalHistory[i].signalType == "SELL")
+            priceDiff = -priceDiff;
+         
+         signalHistory[i].pips = priceDiff / (point * 10);
+         signalHistory[i].isWin = (signalHistory[i].pips >= InpMinPipsForWin);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Statistics                                              |
+//+------------------------------------------------------------------+
+void CalculateStatistics()
+{
+   ResetStats(overallStats);
+   
+   //--- Reset timeframe and risk stats
+   for(int i = 0; i < 4; i++)
+   {
+      tfStats[i].signals = 0;
+      tfStats[i].wins = 0;
+      tfStats[i].avgPips = 0;
+   }
+   
+   for(int i = 0; i < 5; i++)
+   {
+      riskStats[i].signals = 0;
+      riskStats[i].wins = 0;
+      riskStats[i].avgPips = 0;
+   }
+   
+   //--- Calculate from history
+   datetime cutoffTime = TimeCurrent() - InpTrackingPeriodDays * 86400;
+   double totalWinPips = 0, totalLossPips = 0;
+   int currentStreak = 0;
+   bool lastWasWin = false;
+   
+   for(int i = 0; i < ArraySize(signalHistory); i++)
+   {
+      if(signalHistory[i].entryTime < cutoffTime)
+         continue;
+      
+      overallStats.totalSignals++;
+      
+      if(signalHistory[i].isClosed)
+      {
+         overallStats.closedTrades++;
+         overallStats.totalPips += signalHistory[i].pips;
+         
+         if(signalHistory[i].isWin)
+         {
+            overallStats.wins++;
+            totalWinPips += signalHistory[i].pips;
+            
+            if(signalHistory[i].pips > overallStats.largestWin)
+               overallStats.largestWin = signalHistory[i].pips;
+            
+            if(lastWasWin)
+               currentStreak++;
+            else
+            {
+               currentStreak = 1;
+               lastWasWin = true;
+            }
+            
+            if(currentStreak > overallStats.maxWinStreak)
+               overallStats.maxWinStreak = currentStreak;
+         }
+         else
+         {
+            overallStats.losses++;
+            totalLossPips += MathAbs(signalHistory[i].pips);
+            
+            if(signalHistory[i].pips < overallStats.largestLoss)
+               overallStats.largestLoss = signalHistory[i].pips;
+            
+            if(!lastWasWin)
+               currentStreak++;
+            else
+            {
+               currentStreak = 1;
+               lastWasWin = false;
+            }
+            
+            if(currentStreak > overallStats.maxLoseStreak)
+               overallStats.maxLoseStreak = currentStreak;
+         }
+         
+         //--- Track by hour
+         MqlDateTime dt;
+         TimeToStruct(signalHistory[i].entryTime, dt);
+         if(signalHistory[i].isWin)
+            overallStats.profitableHours[dt.hour]++;
+      }
+      
+      //--- Update timeframe stats
+      if(InpTrackByTimeframe)
+      {
+         for(int j = 0; j < 4; j++)
+         {
+            if(signalHistory[i].timeframe == tfStats[j].name)
+            {
+               tfStats[j].signals++;
+               if(signalHistory[i].isClosed)
+               {
+                  tfStats[j].avgPips += signalHistory[i].pips;
+                  if(signalHistory[i].isWin)
+                     tfStats[j].wins++;
+               }
+               break;
+            }
+         }
+      }
+      
+      //--- Update risk level stats
+      if(InpTrackByRiskLevel)
+      {
+         int riskIdx = signalHistory[i].riskLevel - 1;
+         if(riskIdx >= 0 && riskIdx < 5)
+         {
+            riskStats[riskIdx].signals++;
+            if(signalHistory[i].isClosed)
+            {
+               riskStats[riskIdx].avgPips += signalHistory[i].pips;
+               if(signalHistory[i].isWin)
+                  riskStats[riskIdx].wins++;
+            }
+         }
+      }
+   }
+   
+   //--- Calculate derived stats
+   if(overallStats.closedTrades > 0)
+   {
+      overallStats.winRate = (double)overallStats.wins / overallStats.closedTrades * 100.0;
+      overallStats.avgWinPips = (overallStats.wins > 0) ? totalWinPips / overallStats.wins : 0;
+      overallStats.avgLossPips = (overallStats.losses > 0) ? totalLossPips / overallStats.losses : 0;
+      
+      if(overallStats.avgLossPips > 0)
+         overallStats.profitFactor = (overallStats.avgWinPips * overallStats.wins) / 
+                                     (overallStats.avgLossPips * overallStats.losses);
+   }
+   
+   //--- Calculate timeframe win rates
+   for(int i = 0; i < 4; i++)
+   {
+      if(tfStats[i].signals > 0)
+      {
+         tfStats[i].winRate = (double)tfStats[i].wins / tfStats[i].signals * 100.0;
+         tfStats[i].avgPips /= tfStats[i].signals;
+      }
+   }
+   
+   //--- Calculate risk level win rates
+   for(int i = 0; i < 5; i++)
+   {
+      if(riskStats[i].signals > 0)
+      {
+         riskStats[i].winRate = (double)riskStats[i].wins / riskStats[i].signals * 100.0;
+         riskStats[i].avgPips /= riskStats[i].signals;
+      }
+   }
+   
+   overallStats.currentStreak = currentStreak;
+}
+
+//+------------------------------------------------------------------+
+//| Reset Statistics Structure                                        |
+//+------------------------------------------------------------------+
+void ResetStats(PerformanceStats &stats)
+{
+   stats.totalSignals = 0;
+   stats.closedTrades = 0;
+   stats.wins = 0;
+   stats.losses = 0;
+   stats.winRate = 0;
+   stats.totalPips = 0;
+   stats.avgWinPips = 0;
+   stats.avgLossPips = 0;
+   stats.profitFactor = 0;
+   stats.currentStreak = 0;
+   stats.maxWinStreak = 0;
+   stats.maxLoseStreak = 0;
+   stats.largestWin = 0;
+   stats.largestLoss = 0;
+   ArrayInitialize(stats.profitableHours, 0);
+}
+
+//+------------------------------------------------------------------+
+//| Create Statistics Panel                                           |
+//+------------------------------------------------------------------+
+void CreateStatsPanel()
+{
+   int width = 380;
+   int height = InpShowDetailedStats ? 480 : 320;
+   int x = InpPanelX;
+   int y = InpPanelY;
+   
+   CreateRect(objPrefix + "Panel", x, y, width, height, InpPanelColor);
+   CreateLabel(objPrefix + "Title", x + 10, y + 10, "PERFORMANCE STATISTICS", InpHeaderColor, 11, "Arial Bold");
+   CreateLabel(objPrefix + "Period", x + 10, y + 30, "Period: " + IntegerToString(InpTrackingPeriodDays) + " days", clrWhite, 8, "Arial");
+   
+   int yPos = y + 55;
+   CreateRect(objPrefix + "Line1", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   //--- Overall stats
+   yPos += 10;
+   CreateLabel(objPrefix + "OverallHeader", x + 10, yPos, "Overall Performance:", InpHeaderColor, 9, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "TotalLabel", x + 20, yPos, "Total Signals:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "TotalValue", x + 150, yPos, "0", clrWhite, InpFontSize, "Arial Bold");
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "ClosedLabel", x + 20, yPos, "Closed Trades:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "ClosedValue", x + 150, yPos, "0", clrWhite, InpFontSize, "Arial Bold");
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "WinRateLabel", x + 20, yPos, "Win Rate:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "WinRateValue", x + 150, yPos, "0.0%", clrLimeGreen, 10, "Arial Bold");
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "TotalPipsLabel", x + 20, yPos, "Total Pips:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "TotalPipsValue", x + 150, yPos, "0.0", clrWhite, 9, "Arial Bold");
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "PFLabel", x + 20, yPos, "Profit Factor:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "PFValue", x + 150, yPos, "0.00", clrWhite, InpFontSize, "Arial Bold");
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "StreakLabel", x + 20, yPos, "Current Streak:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "StreakValue", x + 150, yPos, "0", clrWhite, InpFontSize, "Arial Bold");
+   
+   if(InpShowDetailedStats)
+   {
+      yPos += 25;
+      CreateRect(objPrefix + "Line2", x + 10, yPos, width - 20, 1, clrDimGray);
+      
+      //--- Timeframe breakdown
+      yPos += 10;
+      CreateLabel(objPrefix + "TFHeader", x + 10, yPos, "By Timeframe:", InpHeaderColor, 9, "Arial Bold");
+      
+      yPos += 20;
+      for(int i = 0; i < 4; i++)
+      {
+         string prefix = objPrefix + "TF" + IntegerToString(i);
+         CreateLabel(prefix + "_Name", x + 20, yPos, tfStats[i].name, clrWhite, InpFontSize - 1, "Arial");
+         CreateLabel(prefix + "_WR", x + 70, yPos, "0%", clrWhite, InpFontSize - 1, "Arial");
+         CreateLabel(prefix + "_Pips", x + 130, yPos, "0.0", clrDimGray, InpFontSize - 1, "Arial");
+         CreateLabel(prefix + "_Count", x + 200, yPos, "(0)", clrDimGray, InpFontSize - 1, "Arial");
+         yPos += 16;
+      }
+      
+      yPos += 5;
+      CreateRect(objPrefix + "Line3", x + 10, yPos, width - 20, 1, clrDimGray);
+      
+      //--- Risk level breakdown
+      yPos += 10;
+      CreateLabel(objPrefix + "RiskHeader", x + 10, yPos, "By Risk Level:", InpHeaderColor, 9, "Arial Bold");
+      
+      yPos += 20;
+      for(int i = 0; i < 5; i++)
+      {
+         string prefix = objPrefix + "Risk" + IntegerToString(i);
+         CreateLabel(prefix + "_Name", x + 20, yPos, "Level " + IntegerToString(i+1), clrWhite, InpFontSize - 1, "Arial");
+         CreateLabel(prefix + "_WR", x + 90, yPos, "0%", clrWhite, InpFontSize - 1, "Arial");
+         CreateLabel(prefix + "_Pips", x + 150, yPos, "0.0", clrDimGray, InpFontSize - 1, "Arial");
+         CreateLabel(prefix + "_Count", x + 220, yPos, "(0)", clrDimGray, InpFontSize - 1, "Arial");
+         yPos += 16;
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Update Statistics Panel                                           |
+//+------------------------------------------------------------------+
+void UpdateStatsPanel()
+{
+   //--- Update overall stats
+   ObjectSetString(0, objPrefix + "TotalValue", OBJPROP_TEXT, IntegerToString(overallStats.totalSignals));
+   ObjectSetString(0, objPrefix + "ClosedValue", OBJPROP_TEXT, IntegerToString(overallStats.closedTrades));
+   
+   string winRateText = DoubleToString(overallStats.winRate, 1) + "%";
+   ObjectSetString(0, objPrefix + "WinRateValue", OBJPROP_TEXT, winRateText);
+   color wrColor = (overallStats.winRate >= 60) ? clrLimeGreen : 
+                   (overallStats.winRate >= 50) ? clrGold : clrOrangeRed;
+   ObjectSetInteger(0, objPrefix + "WinRateValue", OBJPROP_COLOR, wrColor);
+   
+   ObjectSetString(0, objPrefix + "TotalPipsValue", OBJPROP_TEXT, DoubleToString(overallStats.totalPips, 1));
+   color pipsColor = (overallStats.totalPips > 0) ? clrLimeGreen : clrOrangeRed;
+   ObjectSetInteger(0, objPrefix + "TotalPipsValue", OBJPROP_COLOR, pipsColor);
+   
+   ObjectSetString(0, objPrefix + "PFValue", OBJPROP_TEXT, DoubleToString(overallStats.profitFactor, 2));
+   ObjectSetString(0, objPrefix + "StreakValue", OBJPROP_TEXT, IntegerToString(overallStats.currentStreak));
+   
+   if(InpShowDetailedStats)
+   {
+      //--- Update timeframe stats
+      for(int i = 0; i < 4; i++)
+      {
+         string prefix = objPrefix + "TF" + IntegerToString(i);
+         ObjectSetString(0, prefix + "_WR", OBJPROP_TEXT, DoubleToString(tfStats[i].winRate, 1) + "%");
+         ObjectSetString(0, prefix + "_Pips", OBJPROP_TEXT, DoubleToString(tfStats[i].avgPips, 1));
+         ObjectSetString(0, prefix + "_Count", OBJPROP_TEXT, "(" + IntegerToString(tfStats[i].signals) + ")");
+      }
+      
+      //--- Update risk level stats
+      for(int i = 0; i < 5; i++)
+      {
+         string prefix = objPrefix + "Risk" + IntegerToString(i);
+         ObjectSetString(0, prefix + "_WR", OBJPROP_TEXT, DoubleToString(riskStats[i].winRate, 1) + "%");
+         ObjectSetString(0, prefix + "_Pips", OBJPROP_TEXT, DoubleToString(riskStats[i].avgPips, 1));
+         ObjectSetString(0, prefix + "_Count", OBJPROP_TEXT, "(" + IntegerToString(riskStats[i].signals) + ")");
+      }
+   }
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Save Statistics to File                                           |
+//+------------------------------------------------------------------+
+void SaveStatistics()
+{
+   int handle = FileOpen(dataFile, FILE_WRITE|FILE_BIN);
+   if(handle == INVALID_HANDLE)
+   {
+      Print("Failed to save statistics");
+      return;
+   }
+   
+   //--- Write array size
+   int size = ArraySize(signalHistory);
+   FileWriteInteger(handle, size);
+   
+   //--- Write all records
+   for(int i = 0; i < size; i++)
+   {
+      FileWriteLong(handle, signalHistory[i].entryTime);
+      FileWriteLong(handle, signalHistory[i].exitTime);
+      FileWriteString(handle, signalHistory[i].signalType);
+      FileWriteInteger(handle, signalHistory[i].strength);
+      FileWriteInteger(handle, signalHistory[i].riskLevel);
+      FileWriteString(handle, signalHistory[i].timeframe);
+      FileWriteDouble(handle, signalHistory[i].entryPrice);
+      FileWriteDouble(handle, signalHistory[i].exitPrice);
+      FileWriteDouble(handle, signalHistory[i].pips);
+      FileWriteInteger(handle, signalHistory[i].isWin ? 1 : 0);
+      FileWriteInteger(handle, signalHistory[i].isClosed ? 1 : 0);
+      FileWriteString(handle, signalHistory[i].exitReason);
+   }
+   
+   FileClose(handle);
+   Print("Statistics saved: ", size, " records");
+}
+
+//+------------------------------------------------------------------+
+//| Load Statistics from File                                         |
+//+------------------------------------------------------------------+
+void LoadStatistics()
+{
+   int handle = FileOpen(dataFile, FILE_READ|FILE_BIN);
+   if(handle == INVALID_HANDLE)
+   {
+      Print("No previous statistics found");
+      return;
+   }
+   
+   int size = FileReadInteger(handle);
+   ArrayResize(signalHistory, size);
+   
+   for(int i = 0; i < size; i++)
+   {
+      signalHistory[i].entryTime = (datetime)FileReadLong(handle);
+      signalHistory[i].exitTime = (datetime)FileReadLong(handle);
+      signalHistory[i].signalType = FileReadString(handle);
+      signalHistory[i].strength = FileReadInteger(handle);
+      signalHistory[i].riskLevel = FileReadInteger(handle);
+      signalHistory[i].timeframe = FileReadString(handle);
+      signalHistory[i].entryPrice = FileReadDouble(handle);
+      signalHistory[i].exitPrice = FileReadDouble(handle);
+      signalHistory[i].pips = FileReadDouble(handle);
+      signalHistory[i].isWin = (FileReadInteger(handle) == 1);
+      signalHistory[i].isClosed = (FileReadInteger(handle) == 1);
+      signalHistory[i].exitReason = FileReadString(handle);
+   }
+   
+   FileClose(handle);
+   Print("Statistics loaded: ", size, " records");
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create label                                             |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, int x, int y, string text, color clr, int size, string font)
+{
+   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create rectangle                                         |
+//+------------------------------------------------------------------+
+void CreateRect(string name, int x, int y, int width, int height, color clr)
+{
+   ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+}
+
+//+------------------------------------------------------------------+
+//| Public function to add signal (call from unified system)         |
+//+------------------------------------------------------------------+
+void TrackSignal(string signalType, int strength, int riskLevel, string timeframe, double price)
+{
+   AddSignal(signalType, strength, riskLevel, timeframe, price);
+}
+//+------------------------------------------------------------------+

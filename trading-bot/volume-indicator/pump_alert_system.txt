@@ -1,0 +1,714 @@
+//+------------------------------------------------------------------+
+//|                                    PumpAlertSystem.mq5           |
+//|                   Advanced Pump/Dump Alert System                 |
+//|              Multi-Condition Detection with MTF Analysis          |
+//+------------------------------------------------------------------+
+#property copyright "Pump Alert System"
+#property version   "1.00"
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots 0
+
+//--- Input parameters
+input group "=== Alert Conditions ==="
+input bool     InpRequireVolumeSpike = true;   // Require Volume Spike
+input double   InpVolSpikeThreshold = 2.5;     // Volume Spike Multiple
+input bool     InpRequireOrderBookImbalance = true; // Require Order Book Imbalance
+input double   InpImbalanceThreshold = 70.0;   // Imbalance Threshold (%)
+input bool     InpRequireATRExpansion = true;  // Require ATR Expansion
+input double   InpATRExpansionThreshold = 1.5; // ATR Expansion Multiple
+input bool     InpRequireMTFDivergence = true; // Require MTF Divergence
+input int      InpMinConditionsMet = 3;        // Minimum Conditions for Alert
+
+input group "=== Multi-Timeframe Settings ==="
+input ENUM_TIMEFRAMES InpFastTF = PERIOD_M5;   // Fast Timeframe
+input ENUM_TIMEFRAMES InpMediumTF = PERIOD_M15;// Medium Timeframe
+input ENUM_TIMEFRAMES InpSlowTF = PERIOD_H1;   // Slow Timeframe
+input bool     InpCheckMTFAlignment = true;    // Check MTF Alignment
+
+input group "=== Volume Analysis ==="
+input int      InpVolumeLookback = 20;         // Volume Lookback Periods
+input bool     InpCompareTickVolume = true;    // Use Tick Volume
+input double   InpVolumeExtremeThreshold = 4.0;// Extreme Volume Multiple
+
+input group "=== ATR Settings ==="
+input int      InpATRPeriod = 14;              // ATR Period
+input int      InpATRLookback = 20;            // ATR Lookback for Average
+
+input group "=== Order Book Settings ==="
+input int      InpBookDepth = 10;              // Order Book Depth Levels
+input double   InpMinWallSize = 1.0;           // Minimum Wall Size (lots)
+input bool     InpDetectWallRemoval = true;    // Detect Wall Removal
+
+input group "=== Alert Settings ==="
+input bool     InpEnableSoundAlert = true;     // Enable Sound Alerts
+input bool     InpEnablePopupAlert = true;     // Enable Popup Alerts
+input bool     InpEnablePushNotification = false; // Enable Push Notifications
+input string   InpAlertSound = "alert2.wav";   // Alert Sound File
+input int      InpAlertCooldown = 300;         // Alert Cooldown (seconds)
+
+input group "=== Risk Management ==="
+input bool     InpShowRiskLevel = true;        // Show Risk Level
+input bool     InpShowEntryZones = false;      // Show Entry/Exit Zones
+input bool     InpAutoDisableOnAlert = false;  // Auto-Disable After Alert
+
+input group "=== Dashboard ==="
+input int      InpPanelXOffset = 20;           // Panel X Offset
+input int      InpPanelYOffset = 20;           // Panel Y Offset
+input color    InpPanelColor = C'15,15,25';    // Panel Background
+input int      InpFontSize = 9;                // Font Size
+
+input group "=== Logging ==="
+input bool     InpLogToFile = true;            // Log Alerts to File
+input bool     InpLogDetailedData = true;      // Log Detailed Analysis
+
+//--- Alert structure
+struct PumpDumpAlert
+{
+   datetime timestamp;
+   string alertType;          // "PUMP", "DUMP", "EXTREME_PUMP", "EXTREME_DUMP"
+   int conditionsMet;
+   bool volumeSpike;
+   double volumeRatio;
+   bool orderBookImbalance;
+   double imbalancePercent;
+   bool atrExpansion;
+   double atrRatio;
+   bool mtfDivergence;
+   string mtfStatus;
+   bool wallRemovalDetected;
+   int riskLevel;             // 1-5
+   double price;
+   string recommendation;
+};
+
+//--- Global variables
+string objPrefix = "PumpAlert_";
+datetime lastAlertTime = 0;
+bool systemEnabled = true;
+int atrHandle = INVALID_HANDLE;
+MqlBookInfo bookArray[];
+bool orderBookAvailable = false;
+int fileHandle = INVALID_HANDLE;
+PumpDumpAlert lastAlert;
+
+//--- Condition tracking
+bool conditionVolume = false;
+bool conditionOrderBook = false;
+bool conditionATR = false;
+bool conditionMTF = false;
+bool conditionWallRemoval = false;
+
+//--- Historical data for wall tracking
+struct WallSnapshot
+{
+   datetime timestamp;
+   double price;
+   double volume;
+   int type;
+};
+WallSnapshot previousWalls[];
+
+//+------------------------------------------------------------------+
+//| Custom indicator initialization                                  |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   //--- Subscribe to order book
+   if(MarketBookAdd(Symbol()))
+   {
+      orderBookAvailable = true;
+      Print("Pump Alert System: Order book available");
+   }
+   else
+   {
+      orderBookAvailable = false;
+      Print("Warning: Order book not available - some conditions disabled");
+   }
+   
+   //--- Initialize ATR
+   atrHandle = iATR(Symbol(), PERIOD_CURRENT, InpATRPeriod);
+   if(atrHandle == INVALID_HANDLE)
+   {
+      Print("Failed to create ATR indicator");
+      return(INIT_FAILED);
+   }
+   
+   //--- Open log file
+   if(InpLogToFile)
+   {
+      string filename = "PumpAlerts_" + Symbol() + "_" + 
+                        TimeToString(TimeCurrent(), TIME_DATE) + ".csv";
+      fileHandle = FileOpen(filename, FILE_WRITE|FILE_CSV|FILE_ANSI, ",");
+      if(fileHandle != INVALID_HANDLE)
+      {
+         FileWrite(fileHandle, "Timestamp", "AlertType", "ConditionsMet", 
+                   "VolumeRatio", "Imbalance%", "ATR_Ratio", "MTF_Status", 
+                   "WallRemoval", "RiskLevel", "Price", "Recommendation");
+      }
+   }
+   
+   //--- Initialize arrays
+   ArrayResize(previousWalls, 0);
+   
+   //--- Create dashboard
+   CreateDashboard();
+   
+   //--- Set timer for 1-second updates
+   EventSetTimer(1);
+   
+   Print("Pump Alert System initialized successfully");
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator deinitialization                                |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   if(orderBookAvailable)
+      MarketBookRelease(Symbol());
+   
+   if(atrHandle != INVALID_HANDLE)
+      IndicatorRelease(atrHandle);
+   
+   if(fileHandle != INVALID_HANDLE)
+   {
+      FileClose(fileHandle);
+      fileHandle = INVALID_HANDLE;
+   }
+   
+   ObjectsDeleteAll(0, objPrefix);
+   EventKillTimer();
+}
+
+//+------------------------------------------------------------------+
+//| Timer function - main analysis loop                              |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   if(!systemEnabled) return;
+   
+   //--- Reset conditions
+   conditionVolume = false;
+   conditionOrderBook = false;
+   conditionATR = false;
+   conditionMTF = false;
+   conditionWallRemoval = false;
+   
+   //--- Run all condition checks
+   CheckVolumeSpike();
+   if(orderBookAvailable)
+   {
+      CheckOrderBookImbalance();
+      if(InpDetectWallRemoval)
+         CheckWallRemoval();
+   }
+   CheckATRExpansion();
+   if(InpCheckMTFAlignment)
+      CheckMTFDivergence();
+   
+   //--- Count conditions met
+   int conditionCount = 0;
+   if(conditionVolume) conditionCount++;
+   if(conditionOrderBook) conditionCount++;
+   if(conditionATR) conditionCount++;
+   if(conditionMTF) conditionCount++;
+   if(conditionWallRemoval) conditionCount++;
+   
+   //--- Update dashboard
+   UpdateDashboard(conditionCount);
+   
+   //--- Check if alert should be triggered
+   if(conditionCount >= InpMinConditionsMet)
+   {
+      if(TimeCurrent() - lastAlertTime >= InpAlertCooldown)
+      {
+         TriggerAlert(conditionCount);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator iteration                                       |
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+{
+   return(rates_total);
+}
+
+//+------------------------------------------------------------------+
+//| Check Volume Spike Condition                                     |
+//+------------------------------------------------------------------+
+void CheckVolumeSpike()
+{
+   if(!InpRequireVolumeSpike) return;
+   
+   long volumeArray[];
+   ArraySetAsSeries(volumeArray, true);
+   
+   if(CopyTickVolume(Symbol(), PERIOD_CURRENT, 0, InpVolumeLookback + 1, volumeArray) <= 0)
+      return;
+   
+   //--- Calculate average volume
+   long sum = 0;
+   for(int i = 1; i < ArraySize(volumeArray); i++)
+      sum += volumeArray[i];
+   
+   double avgVolume = (double)sum / (ArraySize(volumeArray) - 1);
+   double currentVolume = (double)volumeArray[0];
+   
+   if(avgVolume > 0)
+   {
+      double volumeRatio = currentVolume / avgVolume;
+      if(volumeRatio >= InpVolSpikeThreshold)
+         conditionVolume = true;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check Order Book Imbalance Condition                             |
+//+------------------------------------------------------------------+
+void CheckOrderBookImbalance()
+{
+   if(!InpRequireOrderBookImbalance || !orderBookAvailable) return;
+   
+   if(!MarketBookGet(Symbol(), bookArray))
+      return;
+   
+   double totalBids = 0;
+   double totalAsks = 0;
+   int levelsAnalyzed = 0;
+   
+   for(int i = 0; i < ArraySize(bookArray) && levelsAnalyzed < InpBookDepth; i++)
+   {
+      if(bookArray[i].type == BOOK_TYPE_BUY || bookArray[i].type == BOOK_TYPE_BUY_MARKET)
+      {
+         totalBids += bookArray[i].volume_real;
+         levelsAnalyzed++;
+      }
+      else if(bookArray[i].type == BOOK_TYPE_SELL || bookArray[i].type == BOOK_TYPE_SELL_MARKET)
+      {
+         totalAsks += bookArray[i].volume_real;
+         levelsAnalyzed++;
+      }
+   }
+   
+   double totalVolume = totalBids + totalAsks;
+   if(totalVolume > 0)
+   {
+      double bidPercent = (totalBids / totalVolume) * 100.0;
+      double askPercent = (totalAsks / totalVolume) * 100.0;
+      
+      if(bidPercent >= InpImbalanceThreshold || askPercent >= InpImbalanceThreshold)
+         conditionOrderBook = true;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check ATR Expansion Condition                                    |
+//+------------------------------------------------------------------+
+void CheckATRExpansion()
+{
+   if(!InpRequireATRExpansion) return;
+   
+   double atrArray[];
+   ArraySetAsSeries(atrArray, true);
+   
+   if(CopyBuffer(atrHandle, 0, 0, InpATRLookback + 1, atrArray) <= 0)
+      return;
+   
+   //--- Calculate average ATR
+   double sum = 0;
+   for(int i = 1; i < ArraySize(atrArray); i++)
+      sum += atrArray[i];
+   
+   double avgATR = sum / (ArraySize(atrArray) - 1);
+   double currentATR = atrArray[0];
+   
+   if(avgATR > 0)
+   {
+      double atrRatio = currentATR / avgATR;
+      if(atrRatio >= InpATRExpansionThreshold)
+         conditionATR = true;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check Multi-Timeframe Divergence                                 |
+//+------------------------------------------------------------------+
+void CheckMTFDivergence()
+{
+   if(!InpRequireMTFDivergence) return;
+   
+   //--- Get closes for each timeframe
+   double fastClose = iClose(Symbol(), InpFastTF, 0);
+   double fastPrev = iClose(Symbol(), InpFastTF, 1);
+   
+   double mediumClose = iClose(Symbol(), InpMediumTF, 0);
+   double mediumPrev = iClose(Symbol(), InpMediumTF, 1);
+   
+   double slowClose = iClose(Symbol(), InpSlowTF, 0);
+   double slowPrev = iClose(Symbol(), InpSlowTF, 1);
+   
+   //--- Check for divergence (fast TF shows strong move, slow TF neutral/opposite)
+   bool fastBullish = (fastClose > fastPrev);
+   bool mediumBullish = (mediumClose > mediumPrev);
+   bool slowBullish = (slowClose > slowPrev);
+   
+   //--- Calculate percent changes
+   double fastChange = ((fastClose - fastPrev) / fastPrev) * 100.0;
+   double mediumChange = ((mediumClose - mediumPrev) / mediumPrev) * 100.0;
+   double slowChange = ((slowClose - slowPrev) / slowPrev) * 100.0;
+   
+   //--- Divergence = fast TF moving strongly but slower TFs not confirming
+   if(MathAbs(fastChange) > MathAbs(mediumChange) * 1.5 ||
+      MathAbs(fastChange) > MathAbs(slowChange) * 2.0)
+   {
+      conditionMTF = true;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check Wall Removal (Spoofing Detection)                          |
+//+------------------------------------------------------------------+
+void CheckWallRemoval()
+{
+   if(!orderBookAvailable) return;
+   
+   if(!MarketBookGet(Symbol(), bookArray))
+      return;
+   
+   datetime now = TimeCurrent();
+   
+   //--- Build current wall snapshot
+   WallSnapshot currentWalls[];
+   ArrayResize(currentWalls, 0);
+   
+   for(int i = 0; i < ArraySize(bookArray); i++)
+   {
+      if(bookArray[i].volume_real < InpMinWallSize)
+         continue;
+      
+      int newSize = ArraySize(currentWalls) + 1;
+      ArrayResize(currentWalls, newSize);
+      
+      currentWalls[newSize-1].timestamp = now;
+      currentWalls[newSize-1].price = bookArray[i].price;
+      currentWalls[newSize-1].volume = bookArray[i].volume_real;
+      currentWalls[newSize-1].type = (bookArray[i].type == BOOK_TYPE_BUY) ? 0 : 1;
+   }
+   
+   //--- Compare with previous snapshot to detect removals
+   for(int i = 0; i < ArraySize(previousWalls); i++)
+   {
+      bool foundInCurrent = false;
+      
+      for(int j = 0; j < ArraySize(currentWalls); j++)
+      {
+         if(MathAbs(previousWalls[i].price - currentWalls[j].price) < Point() * 10 &&
+            previousWalls[i].type == currentWalls[j].type)
+         {
+            foundInCurrent = true;
+            break;
+         }
+      }
+      
+      //--- Large wall disappeared
+      if(!foundInCurrent && previousWalls[i].volume >= InpMinWallSize * 2)
+      {
+         int lifetime = (int)(now - previousWalls[i].timestamp);
+         
+         //--- Quick removal = spoofing
+         if(lifetime < 30)
+         {
+            conditionWallRemoval = true;
+            break;
+         }
+      }
+   }
+   
+   //--- Update previous snapshot
+   ArrayResize(previousWalls, ArraySize(currentWalls));
+   for(int i = 0; i < ArraySize(currentWalls); i++)
+      previousWalls[i] = currentWalls[i];
+}
+
+//+------------------------------------------------------------------+
+//| Trigger Alert                                                     |
+//+------------------------------------------------------------------+
+void TriggerAlert(int conditionsMet)
+{
+   //--- Build alert data
+   PumpDumpAlert alert;
+   alert.timestamp = TimeCurrent();
+   alert.conditionsMet = conditionsMet;
+   alert.volumeSpike = conditionVolume;
+   alert.orderBookImbalance = conditionOrderBook;
+   alert.atrExpansion = conditionATR;
+   alert.mtfDivergence = conditionMTF;
+   alert.wallRemovalDetected = conditionWallRemoval;
+   alert.price = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   
+   //--- Determine alert type and risk level
+   if(conditionsMet >= 5)
+   {
+      alert.alertType = "EXTREME_PUMP";
+      alert.riskLevel = 5;
+      alert.recommendation = "AVOID BUYING - HIGH PUMP RISK";
+   }
+   else if(conditionsMet >= 4)
+   {
+      alert.alertType = "STRONG_PUMP";
+      alert.riskLevel = 4;
+      alert.recommendation = "CAUTION - Consider shorting on rejection";
+   }
+   else
+   {
+      alert.alertType = "PUMP_WARNING";
+      alert.riskLevel = 3;
+      alert.recommendation = "Monitor closely - Potential manipulation";
+   }
+   
+   //--- Determine if buying or selling pressure
+   if(orderBookAvailable)
+   {
+      MarketBookGet(Symbol(), bookArray);
+      double totalBids = 0, totalAsks = 0;
+      
+      for(int i = 0; i < ArraySize(bookArray) && i < InpBookDepth; i++)
+      {
+         if(bookArray[i].type == BOOK_TYPE_BUY || bookArray[i].type == BOOK_TYPE_BUY_MARKET)
+            totalBids += bookArray[i].volume_real;
+         else if(bookArray[i].type == BOOK_TYPE_SELL || bookArray[i].type == BOOK_TYPE_SELL_MARKET)
+            totalAsks += bookArray[i].volume_real;
+      }
+      
+      if(totalBids > totalAsks)
+      {
+         alert.alertType = StringFind(alert.alertType, "PUMP") >= 0 ? alert.alertType : "PUMP_" + alert.alertType;
+      }
+      else
+      {
+         alert.alertType = StringReplace(alert.alertType, "PUMP", "DUMP");
+         alert.recommendation = StringReplace(alert.recommendation, "shorting", "buying");
+         alert.recommendation = StringReplace(alert.recommendation, "BUYING", "SELLING");
+      }
+   }
+   
+   //--- Build alert message
+   string message = "\n========== " + alert.alertType + " ALERT ==========\n";
+   message += "Symbol: " + Symbol() + "\n";
+   message += "Time: " + TimeToString(alert.timestamp) + "\n";
+   message += "Price: " + DoubleToString(alert.price, _Digits) + "\n";
+   message += "Conditions Met: " + IntegerToString(conditionsMet) + "/" + IntegerToString(5) + "\n";
+   message += "Risk Level: " + IntegerToString(alert.riskLevel) + "/5\n";
+   message += "\nActive Conditions:\n";
+   
+   if(conditionVolume) message += "✓ Volume Spike\n";
+   if(conditionOrderBook) message += "✓ Order Book Imbalance\n";
+   if(conditionATR) message += "✓ ATR Expansion\n";
+   if(conditionMTF) message += "✓ MTF Divergence\n";
+   if(conditionWallRemoval) message += "✓ Wall Removal (Spoofing)\n";
+   
+   message += "\nRecommendation: " + alert.recommendation + "\n";
+   message += "=======================================\n";
+   
+   //--- Send alerts
+   if(InpEnablePopupAlert)
+      Alert(message);
+   
+   if(InpEnableSoundAlert)
+      PlaySound(InpAlertSound);
+   
+   if(InpEnablePushNotification)
+      SendNotification(Symbol() + " - " + alert.alertType + " | Risk: " + IntegerToString(alert.riskLevel) + "/5");
+   
+   //--- Log to file
+   if(InpLogToFile && fileHandle != INVALID_HANDLE)
+   {
+      FileWrite(fileHandle,
+                TimeToString(alert.timestamp),
+                alert.alertType,
+                IntegerToString(conditionsMet),
+                DoubleToString(alert.volumeRatio, 2),
+                DoubleToString(alert.imbalancePercent, 1),
+                DoubleToString(alert.atrRatio, 2),
+                alert.mtfStatus,
+                (alert.wallRemovalDetected ? "YES" : "NO"),
+                IntegerToString(alert.riskLevel),
+                DoubleToString(alert.price, _Digits),
+                alert.recommendation);
+      FileFlush(fileHandle);
+   }
+   
+   //--- Update last alert time
+   lastAlertTime = TimeCurrent();
+   lastAlert = alert;
+   
+   //--- Auto-disable if requested
+   if(InpAutoDisableOnAlert)
+   {
+      systemEnabled = false;
+      Comment("Pump Alert System DISABLED after alert. Re-enable manually.");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Create Dashboard                                                  |
+//+------------------------------------------------------------------+
+void CreateDashboard()
+{
+   int width = 320;
+   int height = 260;
+   
+   int chartWidth = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int chartHeight = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   
+   int x = chartWidth - width - InpPanelXOffset;
+   int y = chartHeight - height - InpPanelYOffset;
+   
+   CreateRect(objPrefix + "Panel", x, y, width, height, InpPanelColor);
+   CreateLabel(objPrefix + "Title", x + 10, y + 10, "PUMP ALERT SYSTEM", clrGold, 11, "Arial Bold");
+   CreateLabel(objPrefix + "Status", x + 10, y + 30, "Status: ACTIVE", clrLimeGreen, 9, "Arial");
+   
+   int yPos = y + 55;
+   CreateLabel(objPrefix + "CondHeader", x + 10, yPos, "Active Conditions:", clrWhite, InpFontSize, "Arial Bold");
+   
+   yPos += 25;
+   CreateLabel(objPrefix + "VolLabel", x + 20, yPos, "Volume Spike:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "VolStatus", x + 150, yPos, "NO", clrDimGray, InpFontSize, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "OBLabel", x + 20, yPos, "Order Book:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "OBStatus", x + 150, yPos, "NO", clrDimGray, InpFontSize, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "ATRLabel", x + 20, yPos, "ATR Expansion:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "ATRStatus", x + 150, yPos, "NO", clrDimGray, InpFontSize, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "MTFLabel", x + 20, yPos, "MTF Divergence:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "MTFStatus", x + 150, yPos, "NO", clrDimGray, InpFontSize, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "WallLabel", x + 20, yPos, "Wall Removal:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "WallStatus", x + 150, yPos, "NO", clrDimGray, InpFontSize, "Arial Bold");
+   
+   yPos += 30;
+   CreateRect(objPrefix + "Line", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   yPos += 10;
+   CreateLabel(objPrefix + "CountLabel", x + 10, yPos, "Conditions Met:", clrGold, 10, "Arial Bold");
+   CreateLabel(objPrefix + "CountValue", x + 150, yPos, "0/5", clrWhite, 11, "Arial Bold");
+   
+   yPos += 25;
+   CreateLabel(objPrefix + "RiskLabel", x + 10, yPos, "Risk Level:", clrGold, 10, "Arial Bold");
+   CreateLabel(objPrefix + "RiskValue", x + 150, yPos, "LOW", clrLimeGreen, 11, "Arial Bold");
+}
+
+//+------------------------------------------------------------------+
+//| Update Dashboard                                                  |
+//+------------------------------------------------------------------+
+void UpdateDashboard(int conditionsMet)
+{
+   //--- Update condition statuses
+   UpdateConditionStatus("VolStatus", conditionVolume);
+   UpdateConditionStatus("OBStatus", conditionOrderBook);
+   UpdateConditionStatus("ATRStatus", conditionATR);
+   UpdateConditionStatus("MTFStatus", conditionMTF);
+   UpdateConditionStatus("WallStatus", conditionWallRemoval);
+   
+   //--- Update condition count
+   string countText = IntegerToString(conditionsMet) + "/" + IntegerToString(5);
+   ObjectSetString(0, objPrefix + "CountValue", OBJPROP_TEXT, countText);
+   
+   color countColor = clrWhite;
+   if(conditionsMet >= 4) countColor = clrOrangeRed;
+   else if(conditionsMet >= 3) countColor = clrOrange;
+   ObjectSetInteger(0, objPrefix + "CountValue", OBJPROP_COLOR, countColor);
+   
+   //--- Update risk level
+   string riskText = "LOW";
+   color riskColor = clrLimeGreen;
+   
+   if(conditionsMet >= 5)
+   {
+      riskText = "EXTREME";
+      riskColor = clrRed;
+   }
+   else if(conditionsMet >= 4)
+   {
+      riskText = "HIGH";
+      riskColor = clrOrangeRed;
+   }
+   else if(conditionsMet >= 3)
+   {
+      riskText = "MEDIUM";
+      riskColor = clrOrange;
+   }
+   
+   ObjectSetString(0, objPrefix + "RiskValue", OBJPROP_TEXT, riskText);
+   ObjectSetInteger(0, objPrefix + "RiskValue", OBJPROP_COLOR, riskColor);
+   
+   //--- Update system status
+   string statusText = systemEnabled ? "Status: ACTIVE" : "Status: DISABLED";
+   color statusColor = systemEnabled ? clrLimeGreen : clrGray;
+   ObjectSetString(0, objPrefix + "Status", OBJPROP_TEXT, statusText);
+   ObjectSetInteger(0, objPrefix + "Status", OBJPROP_COLOR, statusColor);
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Update Individual Condition Status                               |
+//+------------------------------------------------------------------+
+void UpdateConditionStatus(string labelName, bool status)
+{
+   string text = status ? "YES" : "NO";
+   color clr = status ? clrLimeGreen : clrDimGray;
+   
+   ObjectSetString(0, objPrefix + labelName, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, objPrefix + labelName, OBJPROP_COLOR, clr);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create label                                             |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, int x, int y, string text, color clr, int size, string font)
+{
+   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create rectangle                                         |
+//+------------------------------------------------------------------+
+void CreateRect(string name, int x, int y, int width, int height, color clr)
+{
+   ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+}
+//+------------------------------------------------------------------+

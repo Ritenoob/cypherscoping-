@@ -1,0 +1,418 @@
+Leveraging Deviance Between Index and Mark Prices for Trading Signals
+Introduction
+
+In derivative markets (especially crypto perpetual futures), several price concepts are used:
+
+Index price (spot index) – A volume‑weighted average of the underlying asset’s spot prices on major exchanges. Exchanges build indices from multiple venues, filter outliers and stale quotes, and compute the mid price between the best bid and ask. BTSE’s index price is the best spot liquidity mid price of major exchanges. Orderly constructs a volume‑weighted index and caps each source that deviates more than 5 % from the median.
+
+Mark price (fair price) – A manipulation‑resistant reference price used to mark positions, calculate unrealized profit & loss (PnL), determine liquidation triggers, and compute funding rates. Exchanges combine the index price with a funding‐rate adjustment and a short‑term basis or premium adjustment. For example, Mudrex computes the mark price as the median of three numbers: (i) an index‑plus‑funding estimate, (ii) an index‑plus‑short‑term basis estimate and (iii) the last traded price. BTSE uses a similar formula (Price₁, Price₂ and last price) and applies outlier handling when spot prices deviate by more than 3 %. Orderly also clamps the mark price within a fixed percentage of the index price (3–5.25 % depending on the asset) to prevent large deviations.
+
+Last price (perp price) – The most recent trade price of the perpetual futures contract. It may differ significantly from the fair value because of low liquidity or sudden market orders. Mark prices are used instead of last prices for risk management.
+
+Because the mark price is derived from the index price but includes basis/premium adjustments, the deviance (difference) between the mark price and the index price reflects market imbalances. When the perp contract trades above the spot index, the mark price (and last price) will typically exceed the index price; this premium is reduced through funding payments, but its magnitude can inform directional bias. The deviance is sometimes called the premium index or basis, and can be analysed for trading signals.
+
+Formulas for Mark Price and Index Price
+Index price calculation
+
+The index price is generally computed as a robust average of spot prices from multiple exchanges with outlier protection:
+
+Mid‑price averaging – BTSE’s index price equals the average of the best bid and best ask across selected spot exchanges (best liquidity). Orderly uses a volume‑weighted average of several exchanges and caps each source when its price deviates by more than 5 %.
+
+Outlier handling – Exchanges reduce weights or exclude prices when they deviate beyond a threshold (e.g., ±3 % on BTSE or ±5 % on Orderly). When multiple sources deviate, the median of all sources is used.
+
+Mark price formulas
+
+Although each exchange implements slight variations, most mark prices are constructed from the index price plus adjustments:
+
+Exchange / Platform	Formula and components (index & basis)	Source
+BTSE	Mark price = Median(Price₁, Price₂, Last Price). Price₁ = Index × (1 + Funding Rate × (Time until next funding / Funding interval)); Price₂ = Index + Moving average of the basis difference (five‑minute average of midpoint minus index).	BTSE support
+Mudrex	Mark price = median(Price₁, Price₂, Last Traded Price). Price₁ = Index × [1 + Funding Rate × (Time until next funding / 8 h)], and Price₂ = Index + (short‑term basis moving average). The basis moving average is computed from the order book midpoint minus the index price over ~2.5 minutes.	Mudrex blog
+Orderly	Median price = Median(P₁, P₂, Futures Price), where P₁ = Index × (1 + Last funding rate × Time until next funding / 8 h), P₂ = Index + 15‑minute moving average of the basis. The mark price is then clamped between Index × (1 + Factor × cap funding) and Index × (1 + Factor × floor funding). For BTC and ETH, the maximum deviation allowed is roughly 3 %.	Orderly documentation
+LBank	Mark price = Index × (1 + Basis), where Basis = Funding Rate × (Time until funding / 8).	LBank article
+YFX	When net position is long, market price (their version of mark price) = Index × (1 + Premium); when net position is short, market price = Index × (1 – Premium). The premium index is a segmented function of net long/short positions.	YFX documentation
+
+These formulas show that mark price is essentially the index price plus a premium/basis adjustment related to funding rates and short‑term differences between perp and spot markets. Exchanges take the median to mitigate manipulation and often cap the final mark price within a small percentage of the index price.
+
+Premium (basis) and premium index
+
+The premium index measures the relative difference between the mark (or futures) price and the spot index. One Trading defines the premium index as the difference between mark price and index price and uses it to compute funding rates. On YFX, the premium index adjusts the market price to maintain balance between long and short positions. In general, the premium 
+𝑃
+𝑡
+P
+t
+	​
+
+ at time t can be computed as:
+
+𝑃
+𝑡
+=
+MarkPrice
+𝑡
+−
+IndexPrice
+𝑡
+IndexPrice
+𝑡
+P
+t
+	​
+
+=
+IndexPrice
+t
+	​
+
+MarkPrice
+t
+	​
+
+−IndexPrice
+t
+	​
+
+	​
+
+
+Positive premiums mean the futures price trades above the spot index; negative premiums mean futures trade below spot. Binance exposes this value via its premiumIndex API endpoint: a sample response shows "markPrice": 11029.6957 and "indexPrice": 10979.1444 for BTCUSD perpetual contracts. Binance also offers premium index K‑line data, which returns open/high/low/close values of the premium index over chosen intervals.
+
+Significance of the Deviance (Mark − Index)
+Connection to funding rates and sentiment
+
+Funding rates are periodic payments between longs and shorts that force the perp price back toward the spot index. One Trading’s methodology states that the funding rate consists of an interest‑rate differential and a premium index component; when futures trade at a premium, long traders pay shorts, and when futures trade at a discount, shorts pay longs. Thus the sign of the premium index drives funding payments.
+
+CryptoQuant explains that funding rates represent traders’ sentiment: positive funding rates (premium > 0) indicate dominant long positions and bullish sentiment, while negative funding rates (premium < 0) indicate dominant shorts and bearish sentiment. However, high funding rates do not guarantee imminent price reversal; funding tends to rise naturally during bull markets.
+
+Premium index as trading indicator
+
+Whaleportal’s Bitcoin Premium Index – This index tracks the difference between the perpetual contract’s last trade and the spot index. When the premium is above zero, the perpetual contract trades higher than the “mark price”; this is usually considered bearish, whereas when the premium is below zero (spot trading higher than the perpetual), it is often bullish. Extreme readings can signal potential reversals.
+
+Runbot’s premium index indicator – Runbot describes the premium index as a gauge of market sentiment; positive premiums suggest that futures prices exceed spot and may indicate expectations of price increases, while negative premiums suggest expectations of price decreases. Traders can monitor when the premium crosses certain thresholds to trigger long or short entries.
+
+TradingView “Spot Premium with ROC” indicator – This script compares the Binance perpetual futures price with the Coinbase spot price. A sustained positive premium often indicates bullish sentiment, whereas a discount (futures below spot) can signal bearish bias. The indicator also highlights arbitrage opportunities and funding‐rate insights.
+
+Coinbase premium index – Bitsgap reports that recovery in the Coinbase Premium Index has often signalled upcoming Bitcoin price rebounds. When U.S. demand is strong and Coinbase’s BTC price trades above global averages, the premium turns positive and sometimes precedes price rallies. Conversely, a negative Coinbase premium can warn of weakening U.S. demand and potential price declines.
+
+Premium adjustment on YFX – YFX uses a segmented premium index based on net long/short position ratios. When net longs dominate, the premium becomes positive, making the market price higher than the index and discouraging further longs. If net shorts dominate, the premium is negative, making the market price lower than the index and encouraging longs.
+
+These examples illustrate that deviations between mark and index prices encapsulate market sentiment and can provide clues about future price direction. Positive premiums suggest the contract is expensive relative to spot and may precede price corrections or funding payments from longs; negative premiums suggest the contract is cheap and may precede upward movement. Many traders combine premium signals with other indicators (price structure, momentum, volume) to confirm trade setups.
+
+Basis trading and arbitrage
+
+The premium or basis also underpins basis trading, where traders simultaneously hold opposing positions in spot and futures markets to profit from basis changes. Investopedia describes basis trading as taking positions around the difference between the spot price and a futures contract; traders go long the basis when they expect the spread to widen and short the basis when they expect it to narrow. This strategy is widely used in commodity and crypto markets and reflects the expectation that futures prices converge to spot by expiry.
+
+Mathematical Treatment of the Deviance
+Simple deviance measures
+
+Absolute difference: 
+Δ
+𝑡
+=
+MarkPrice
+𝑡
+−
+IndexPrice
+𝑡
+Δ
+t
+	​
+
+=MarkPrice
+t
+	​
+
+−IndexPrice
+t
+	​
+
+. A positive 
+Δ
+𝑡
+Δ
+t
+	​
+
+ indicates futures trade above spot; negative indicates discount. Absolute difference is measured in the asset’s currency (e.g., USD per BTC).
+
+Percentage difference (premium index): 
+𝑃
+𝑡
+=
+Δ
+𝑡
+IndexPrice
+𝑡
+×
+100
+P
+t
+	​
+
+=
+IndexPrice
+t
+	​
+
+Δ
+t
+	​
+
+	​
+
+×100 %. This normalizes the spread relative to the index price and allows comparison across assets and time.
+
+Z‑score of the premium: 
+𝑍
+𝑡
+=
+𝑃
+𝑡
+−
+𝜇
+𝑛
+𝜎
+𝑛
+Z
+t
+	​
+
+=
+σ
+n
+	​
+
+P
+t
+	​
+
+−μ
+n
+	​
+
+	​
+
+, where 
+𝜇
+𝑛
+μ
+n
+	​
+
+ and 
+𝜎
+𝑛
+σ
+n
+	​
+
+ are the moving average and standard deviation of the premium over the last n periods. Extreme positive or negative Z‑scores (e.g., |Z| > 2) may indicate overextended premiums and potential mean reversion.
+
+Time‑weighted premium average: Exchanges like One Trading compute a time‑weighted average of the premium index across each funding period. Weights can increase linearly to emphasise recent observations (
+𝑤
+𝑡
+=
+𝑤
+0
++
+𝛼
+𝑡
+w
+t
+	​
+
+=w
+0
+	​
+
++αt). This average feeds into funding‑rate calculation and ensures that short‑lived spikes have less impact.
+
+Probability of price movement
+
+To estimate the probability that the price will move up or down given the premium, we can model the relationship between premium values and subsequent returns. One practical method is to employ logistic regression or classifier models:
+
+Define the target – For each observation, label whether the asset price increased over the next h minutes/hours (return 
+𝑟
+𝑡
++
+ℎ
+>
+0
+r
+t+h
+	​
+
+>0) or decreased (
+𝑟
+𝑡
++
+ℎ
+<
+0
+r
+t+h
+	​
+
+<0).
+
+Feature engineering – Use current and lagged premium metrics (
+𝑃
+𝑡
+P
+t
+	​
+
+, 
+𝑍
+𝑡
+Z
+t
+	​
+
+), funding rates, volume, and momentum indicators as features.
+
+Model – Fit a logistic regression or machine‑learning classifier that outputs 
+Pr
+⁡
+(
+𝑟
+𝑡
++
+ℎ
+>
+0
+∣
+𝑥
+𝑡
+)
+Pr(r
+t+h
+	​
+
+>0∣x
+t
+	​
+
+). Alternatively, use a conditional probability table: compute the fraction of times the price rose given that the premium was within certain bins. For instance, compute 
+Pr
+⁡
+(
+𝑟
+𝑡
++
+1
+>
+0
+∣
+𝑃
+𝑡
+>
+0.2
+%
+)
+Pr(r
+t+1
+	​
+
+>0∣P
+t
+	​
+
+>0.2%).
+
+Backtesting and win rate – Simulate trading strategies based on the sign and magnitude of the premium. For example, enter a short when 
+𝑃
+𝑡
+P
+t
+	​
+
+ exceeds a positive threshold and a long when 
+𝑃
+𝑡
+P
+t
+	​
+
+ is below a negative threshold. Track the percentage of trades that closed in profit (win rate). Adjust thresholds and holding periods to optimize performance. This process provides an empirical estimate of the statistical win rate of premium‑based signals.
+
+Because market behaviour changes across time, it is important to conduct the analysis on recent datasets and to account for funding costs, fees, and slippage. In bull markets, premiums can remain positive for extended periods, so contrarian trades based purely on premium sign may underperform. Combining premium signals with momentum indicators can improve accuracy.
+
+Building an Indicator and AI‑Driven Strategy
+Data requirements
+
+An AI‑driven indicator that exploits the deviance between mark and index prices needs real‑time market data. Essential inputs include:
+
+Index price – fetch via exchange APIs (e.g., Binance premiumIndex endpoint returns indexPrice; for other exchanges, query their index price endpoints).
+
+Mark price – available via the same API (markPrice field). Alternatively, compute mark price using formulas provided by BTSE, Mudrex, or Orderly if the exchange does not provide it.
+
+Last price – current trade price of the perpetual contract (often provided in ticker endpoints).
+
+Funding rate – fetch latest funding rate and time to next funding (for premium adjustments).
+
+OHLCV data – optional for additional indicators (moving averages, volume, volatility). Binance offers mark price K‑line data and premium index K‑lines.
+
+Implementation steps (pseudocode)
+
+Connect to data sources:
+
+import requests
+import pandas as pd
+
+# Example: Binance API endpoint for mark and index price
+url = "https://dapi.binance.com/dapi/v1/premiumIndex"
+params = {"symbol": "BTCUSD_PERP"}
+data = requests.get(url, params=params).json()[0]
+mark_price = float(data["markPrice"])
+index_price = float(data["indexPrice"])
+premium = (mark_price - index_price) / index_price  # decimal
+
+
+Calculate premium statistics: maintain a rolling window (e.g., 30 minutes) to compute moving average (
+𝜇
+μ), standard deviation (
+𝜎
+σ), and z‑score of the premium. Use OHLCV data for mark price or premium index if available.
+
+Generate signals:
+
+Trend‑following: when premium is positive and the underlying price is trending upward (e.g., above moving average), enter long; when premium is negative and price is trending down, enter short.
+
+Mean‑reversion: when the premium z‑score exceeds a positive threshold (e.g., 
+𝑍
+>
+2
+Z>2), short the contract expecting the premium to revert; when 
+𝑍
+<
+−
+2
+Z<−2, go long.
+
+Hybrid: require confirmation from momentum indicators (RSI, MACD) and volume filters to avoid false signals.
+
+Risk management: specify stop‑loss and take‑profit levels; account for funding payments (positive premium implies paying funding when long). Use leverage cautiously.
+
+Backtesting: feed historical premium index K‑line data into the strategy, simulate trades, and record performance metrics (win rate, Sharpe ratio, drawdown). Compare to baseline strategies.
+
+Machine‑learning module: train classification/regression models on features (premium, funding rate, momentum, order‑book imbalance). Evaluate predictive accuracy on out‑of‑sample data. Integrate the model into the trading bot to score probabilities of upward or downward price moves.
+
+Real‑time integration
+
+For real‑time execution, implement asynchronous tasks that:
+
+Poll exchange APIs at sub‑minute frequency for markPrice and indexPrice.
+
+Update rolling statistics and feed them into the AI model.
+
+Send trade orders via exchange trading APIs when signals trigger. Ensure compliance with API rate limits and error handling.
+
+Libraries such as ccxt (for cross‑exchange API access) or python‑binance can simplify data retrieval. Use pandas for data wrangling and scikit‑learn for machine‑learning models.
+
+Conclusion
+
+The difference between an asset’s mark price and index price encodes valuable information about market sentiment, funding pressure, and expected price convergence. Exchanges compute mark prices by adjusting the spot index with funding‑rate and short‑term basis adjustments. The resulting deviation (often called the premium index) is central to funding‑rate calculations, influences traders’ costs and can indicate whether longs or shorts dominate.
+
+Positive premiums (futures trading above spot) generally signal excessive long positioning and may precede funding payments from longs; negative premiums can indicate bearish sentiment but may also precede price recoveries. Traders and quantitative systems can exploit this information via basis trading, premium index indicators, or machine‑learning strategies that link premium values to subsequent returns. Because premiums can persist in strong trends and are influenced by funding costs, they should be combined with other signals (momentum, volume, order‑flow) and robust risk management to improve reliability.
+
+With proper data collection (via exchange APIs), calculation of premium metrics, and statistical analysis, an AI‑driven indicator can monitor these deviations and generate probabilistic forecasts of price direction. Backtesting across different market regimes is essential to estimate the strategy’s win rate and refine thresholds. Ultimately, understanding and harnessing the deviance between index and mark prices empowers traders to better anticipate market dynamics and manage risk in perpetual futures markets.

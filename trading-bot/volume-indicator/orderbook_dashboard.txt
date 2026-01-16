@@ -1,0 +1,575 @@
+//+------------------------------------------------------------------+
+//|                                OrderBookDashboard.mq5            |
+//|                   Real-Time Order Book Imbalance Analysis         |
+//|                      With Pump/Dump Detection Scoring             |
+//+------------------------------------------------------------------+
+#property copyright "Order Book Analysis Dashboard"
+#property version   "1.00"
+#property indicator_chart_window
+
+//--- Input parameters
+input group "=== Order Book Settings ==="
+input int      InpDepthLevels = 10;        // Depth Levels to Analyze
+input double   InpImbalanceThreshold = 65; // Imbalance Alert Threshold (%)
+input bool     InpShowBookData = true;     // Show Order Book Details
+
+input group "=== Pump/Dump Detection ==="
+input int      InpLookbackBars = 20;       // Volume Lookback Period
+input double   InpVolSpikeMultiple = 2.5;  // Volume Spike Multiple
+input double   InpATRMultiple = 1.5;       // ATR Expansion Multiple
+input int      InpPumpThreshold = 70;      // Pump Score Alert Level
+input int      InpDumpThreshold = 70;      // Dump Score Alert Level
+
+input group "=== Dashboard Settings ==="
+input int      InpPanelXOffset = 20;       // Panel X Offset from Right
+input int      InpPanelYOffset = 20;       // Panel Y Offset from Bottom
+input color    InpPanelColor = C'20,20,30';// Panel Background
+input color    InpTextColor = clrWhite;    // Text Color
+input color    InpBuyColor = clrLimeGreen; // Buy Pressure Color
+input color    InpSellColor = clrOrangeRed;// Sell Pressure Color
+input int      InpFontSize = 9;            // Font Size
+
+input group "=== Alerts ==="
+input bool     InpEnableAlerts = true;     // Enable Alerts
+input bool     InpLogToFile = true;        // Log Signals to File
+
+//--- Dashboard object prefix
+string objPrefix = "OB_Dashboard_";
+
+//--- Order book structure
+struct OrderBookLevel
+{
+   double price;
+   double volume;
+   int type; // 0=bid, 1=ask
+};
+
+//--- Analysis data
+struct OrderBookAnalysis
+{
+   datetime timestamp;
+   double totalBidVolume;
+   double totalAskVolume;
+   double imbalancePercent;  // 0-100, >50 = buy pressure
+   double bidAskRatio;
+   int bidLevels;
+   int askLevels;
+   double strongestBidPrice;
+   double strongestBidVolume;
+   double strongestAskPrice;
+   double strongestAskVolume;
+   double currentATR;
+   double avgVolume;
+   double currentVolume;
+   int pumpScore;    // 0-100
+   int dumpScore;    // 0-100
+   string signal;    // "PUMP_ALERT", "DUMP_ALERT", "NORMAL"
+};
+
+//--- Global variables
+OrderBookAnalysis currentAnalysis;
+MqlBookInfo bookArray[];
+datetime lastAlertTime = 0;
+int atrHandle = INVALID_HANDLE;
+int fileHandle = INVALID_HANDLE;
+bool orderBookAvailable = false;
+
+//+------------------------------------------------------------------+
+//| Custom indicator initialization                                  |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   //--- Check if order book is available
+   if(!MarketBookAdd(Symbol()))
+   {
+      Print("Order Book not available for ", Symbol());
+      Print("This indicator requires Depth of Market data.");
+      Print("Please check your broker settings and symbol specifications.");
+      orderBookAvailable = false;
+      // Continue anyway to show error message in dashboard
+   }
+   else
+   {
+      orderBookAvailable = true;
+      Print("Order Book successfully subscribed for ", Symbol());
+   }
+   
+   //--- Initialize ATR indicator
+   atrHandle = iATR(Symbol(), PERIOD_CURRENT, 14);
+   if(atrHandle == INVALID_HANDLE)
+   {
+      Print("Failed to create ATR indicator");
+      return(INIT_FAILED);
+   }
+   
+   //--- Create dashboard
+   CreateDashboard();
+   
+   //--- Open log file
+   if(InpLogToFile)
+   {
+      string filename = "OrderBook_" + Symbol() + "_Signals.csv";
+      fileHandle = FileOpen(filename, FILE_WRITE|FILE_CSV|FILE_ANSI, ",");
+      if(fileHandle != INVALID_HANDLE)
+      {
+         FileWrite(fileHandle, "Timestamp", "Signal", "PumpScore", "DumpScore", 
+                   "Imbalance%", "BidVolume", "AskVolume", "Ratio", "Price", "ATR");
+      }
+   }
+   
+   //--- Set timer for order book updates
+   EventSetTimer(1); // Update every second
+   
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator deinitialization                                |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   //--- Unsubscribe from order book
+   if(orderBookAvailable)
+      MarketBookRelease(Symbol());
+   
+   //--- Delete dashboard objects
+   ObjectsDeleteAll(0, objPrefix);
+   
+   //--- Release ATR
+   if(atrHandle != INVALID_HANDLE)
+      IndicatorRelease(atrHandle);
+   
+   //--- Close log file
+   if(fileHandle != INVALID_HANDLE)
+   {
+      FileClose(fileHandle);
+      fileHandle = INVALID_HANDLE;
+   }
+   
+   //--- Kill timer
+   EventKillTimer();
+}
+
+//+------------------------------------------------------------------+
+//| Timer function for order book updates                            |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   if(!orderBookAvailable) return;
+   
+   //--- Analyze order book
+   AnalyzeOrderBook();
+   
+   //--- Update dashboard
+   UpdateDashboard();
+   
+   //--- Check for alerts
+   if(InpEnableAlerts)
+      CheckAlerts();
+   
+   //--- Log data
+   if(InpLogToFile && fileHandle != INVALID_HANDLE)
+      LogAnalysis();
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator iteration                                       |
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+{
+   //--- Order book updates handled by timer
+   return(rates_total);
+}
+
+//+------------------------------------------------------------------+
+//| Analyze Order Book Data                                          |
+//+------------------------------------------------------------------+
+void AnalyzeOrderBook()
+{
+   currentAnalysis.timestamp = TimeCurrent();
+   
+   if(!orderBookAvailable)
+   {
+      currentAnalysis.signal = "NO_DATA";
+      return;
+   }
+   
+   //--- Get order book
+   if(!MarketBookGet(Symbol(), bookArray))
+   {
+      currentAnalysis.signal = "ERROR";
+      return;
+   }
+   
+   //--- Reset counters
+   currentAnalysis.totalBidVolume = 0;
+   currentAnalysis.totalAskVolume = 0;
+   currentAnalysis.bidLevels = 0;
+   currentAnalysis.askLevels = 0;
+   currentAnalysis.strongestBidVolume = 0;
+   currentAnalysis.strongestAskVolume = 0;
+   
+   double currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   int levelsAnalyzed = 0;
+   
+   //--- Analyze order book levels
+   for(int i = 0; i < ArraySize(bookArray) && levelsAnalyzed < InpDepthLevels; i++)
+   {
+      if(bookArray[i].type == BOOK_TYPE_BUY || bookArray[i].type == BOOK_TYPE_BUY_MARKET)
+      {
+         currentAnalysis.totalBidVolume += bookArray[i].volume_real;
+         currentAnalysis.bidLevels++;
+         
+         if(bookArray[i].volume_real > currentAnalysis.strongestBidVolume)
+         {
+            currentAnalysis.strongestBidVolume = bookArray[i].volume_real;
+            currentAnalysis.strongestBidPrice = bookArray[i].price;
+         }
+         levelsAnalyzed++;
+      }
+      else if(bookArray[i].type == BOOK_TYPE_SELL || bookArray[i].type == BOOK_TYPE_SELL_MARKET)
+      {
+         currentAnalysis.totalAskVolume += bookArray[i].volume_real;
+         currentAnalysis.askLevels++;
+         
+         if(bookArray[i].volume_real > currentAnalysis.strongestAskVolume)
+         {
+            currentAnalysis.strongestAskVolume = bookArray[i].volume_real;
+            currentAnalysis.strongestAskPrice = bookArray[i].price;
+         }
+         levelsAnalyzed++;
+      }
+   }
+   
+   //--- Calculate imbalance
+   double totalVolume = currentAnalysis.totalBidVolume + currentAnalysis.totalAskVolume;
+   if(totalVolume > 0)
+   {
+      currentAnalysis.imbalancePercent = (currentAnalysis.totalBidVolume / totalVolume) * 100.0;
+      currentAnalysis.bidAskRatio = currentAnalysis.totalBidVolume / (currentAnalysis.totalAskVolume + 1e-9);
+   }
+   else
+   {
+      currentAnalysis.imbalancePercent = 50.0;
+      currentAnalysis.bidAskRatio = 1.0;
+   }
+   
+   //--- Get ATR
+   double atrBuffer[];
+   ArraySetAsSeries(atrBuffer, true);
+   if(CopyBuffer(atrHandle, 0, 0, 1, atrBuffer) > 0)
+      currentAnalysis.currentATR = atrBuffer[0];
+   
+   //--- Calculate volume statistics
+   long volumeArray[];
+   if(CopyTickVolume(Symbol(), PERIOD_CURRENT, 0, InpLookbackBars, volumeArray) > 0)
+   {
+      long sum = 0;
+      for(int i = 0; i < ArraySize(volumeArray); i++)
+         sum += volumeArray[i];
+      currentAnalysis.avgVolume = (double)sum / ArraySize(volumeArray);
+      currentAnalysis.currentVolume = (double)volumeArray[0];
+   }
+   
+   //--- Calculate Pump/Dump scores
+   CalculatePumpDumpScores();
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Pump and Dump Scores                                   |
+//+------------------------------------------------------------------+
+void CalculatePumpDumpScores()
+{
+   currentAnalysis.pumpScore = 0;
+   currentAnalysis.dumpScore = 0;
+   currentAnalysis.signal = "NORMAL";
+   
+   //--- Component 1: Order Book Imbalance (0-30 points)
+   double imbalanceScore = 0;
+   if(currentAnalysis.imbalancePercent > 50)
+      imbalanceScore = ((currentAnalysis.imbalancePercent - 50) / 50.0) * 30;
+   else
+      imbalanceScore = ((50 - currentAnalysis.imbalancePercent) / 50.0) * 30;
+   
+   //--- Component 2: Bid/Ask Ratio (0-25 points)
+   double ratioScore = 0;
+   if(currentAnalysis.bidAskRatio > 1.0)
+      ratioScore = MathMin((currentAnalysis.bidAskRatio - 1.0) / 2.0, 1.0) * 25;
+   else
+      ratioScore = MathMin((1.0 - currentAnalysis.bidAskRatio) / 0.5, 1.0) * 25;
+   
+   //--- Component 3: Volume Spike (0-25 points)
+   double volSpikeScore = 0;
+   if(currentAnalysis.avgVolume > 0)
+   {
+      double volRatio = currentAnalysis.currentVolume / currentAnalysis.avgVolume;
+      if(volRatio > InpVolSpikeMultiple)
+         volSpikeScore = MathMin((volRatio - InpVolSpikeMultiple) / InpVolSpikeMultiple, 1.0) * 25;
+   }
+   
+   //--- Component 4: Wall Strength (0-20 points)
+   double wallScore = 0;
+   double maxWall = MathMax(currentAnalysis.strongestBidVolume, currentAnalysis.strongestAskVolume);
+   double avgWall = (currentAnalysis.totalBidVolume + currentAnalysis.totalAskVolume) / 
+                    (currentAnalysis.bidLevels + currentAnalysis.askLevels + 1e-9);
+   if(avgWall > 0)
+   {
+      double wallStrength = maxWall / avgWall;
+      wallScore = MathMin(wallStrength / 5.0, 1.0) * 20;
+   }
+   
+   //--- Calculate final scores
+   if(currentAnalysis.imbalancePercent > 50)
+   {
+      // Buy pressure dominant = PUMP potential
+      currentAnalysis.pumpScore = (int)(imbalanceScore + ratioScore + volSpikeScore + wallScore);
+   }
+   else
+   {
+      // Sell pressure dominant = DUMP potential
+      currentAnalysis.dumpScore = (int)(imbalanceScore + ratioScore + volSpikeScore + wallScore);
+   }
+   
+   //--- Determine signal
+   if(currentAnalysis.pumpScore >= InpPumpThreshold)
+      currentAnalysis.signal = "PUMP_ALERT";
+   else if(currentAnalysis.dumpScore >= InpDumpThreshold)
+      currentAnalysis.signal = "DUMP_ALERT";
+   else
+      currentAnalysis.signal = "NORMAL";
+}
+
+//+------------------------------------------------------------------+
+//| Create Dashboard                                                  |
+//+------------------------------------------------------------------+
+void CreateDashboard()
+{
+   int width = 380;
+   int height = 320;
+   
+   int chartWidth = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int chartHeight = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   
+   int x = chartWidth - width - InpPanelXOffset;
+   int y = chartHeight - height - InpPanelYOffset;
+   
+   //--- Main panel
+   CreateRect(objPrefix + "Panel", x, y, width, height, InpPanelColor);
+   
+   //--- Title
+   CreateLabel(objPrefix + "Title", x + 10, y + 10, "ORDER BOOK ANALYSIS", clrGold, 11, "Arial Bold");
+   CreateLabel(objPrefix + "Symbol", x + 10, y + 30, Symbol(), InpTextColor, 9, "Arial");
+   
+   //--- Imbalance section
+   int yPos = y + 55;
+   CreateLabel(objPrefix + "ImbalanceLabel", x + 10, yPos, "Order Book Imbalance:", InpTextColor, InpFontSize, "Arial Bold");
+   CreateLabel(objPrefix + "ImbalanceValue", x + 180, yPos, "50.0%", InpTextColor, 11, "Arial Bold");
+   
+   yPos += 25;
+   CreateLabel(objPrefix + "BidLabel", x + 20, yPos, "Total Bids:", clrDodgerBlue, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "BidValue", x + 120, yPos, "0", InpBuyColor, InpFontSize, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "AskLabel", x + 20, yPos, "Total Asks:", clrOrange, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "AskValue", x + 120, yPos, "0", InpSellColor, InpFontSize, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "RatioLabel", x + 20, yPos, "Bid/Ask Ratio:", InpTextColor, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "RatioValue", x + 120, yPos, "1.00", InpTextColor, InpFontSize, "Arial Bold");
+   
+   //--- Separator
+   yPos += 25;
+   CreateRect(objPrefix + "Line1", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   //--- Strongest levels
+   yPos += 10;
+   CreateLabel(objPrefix + "StrongLabel", x + 10, yPos, "Strongest Levels:", clrGold, InpFontSize, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "BidWallLabel", x + 20, yPos, "Bid Wall:", InpBuyColor, InpFontSize - 1, "Arial");
+   CreateLabel(objPrefix + "BidWallPrice", x + 90, yPos, "0.00", InpTextColor, InpFontSize - 1, "Arial");
+   CreateLabel(objPrefix + "BidWallVol", x + 180, yPos, "0", InpTextColor, InpFontSize - 1, "Arial");
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "AskWallLabel", x + 20, yPos, "Ask Wall:", InpSellColor, InpFontSize - 1, "Arial");
+   CreateLabel(objPrefix + "AskWallPrice", x + 90, yPos, "0.00", InpTextColor, InpFontSize - 1, "Arial");
+   CreateLabel(objPrefix + "AskWallVol", x + 180, yPos, "0", InpTextColor, InpFontSize - 1, "Arial");
+   
+   //--- Separator
+   yPos += 23;
+   CreateRect(objPrefix + "Line2", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   //--- Pump/Dump scores
+   yPos += 10;
+   CreateLabel(objPrefix + "ScoreLabel", x + 10, yPos, "Manipulation Detection:", clrGold, InpFontSize, "Arial Bold");
+   
+   yPos += 22;
+   CreateLabel(objPrefix + "PumpLabel", x + 20, yPos, "PUMP Score:", InpTextColor, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "PumpValue", x + 130, yPos, "0", InpBuyColor, 10, "Arial Bold");
+   CreateRect(objPrefix + "PumpBar", x + 170, yPos + 3, 0, 12, InpBuyColor);
+   
+   yPos += 25;
+   CreateLabel(objPrefix + "DumpLabel", x + 20, yPos, "DUMP Score:", InpTextColor, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "DumpValue", x + 130, yPos, "0", InpSellColor, 10, "Arial Bold");
+   CreateRect(objPrefix + "DumpBar", x + 170, yPos + 3, 0, 12, InpSellColor);
+   
+   //--- Alert status
+   yPos += 30;
+   CreateRect(objPrefix + "Line3", x + 10, yPos, width - 20, 1, clrDimGray);
+   yPos += 10;
+   CreateLabel(objPrefix + "StatusLabel", x + 10, yPos, "Status:", InpTextColor, 10, "Arial Bold");
+   CreateLabel(objPrefix + "StatusValue", x + 80, yPos, "NORMAL", clrLimeGreen, 11, "Arial Bold");
+}
+
+//+------------------------------------------------------------------+
+//| Update Dashboard                                                  |
+//+------------------------------------------------------------------+
+void UpdateDashboard()
+{
+   int width = 380;
+   int height = 320;
+   int chartWidth = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int chartHeight = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   
+   int x = chartWidth - width - InpPanelXOffset;
+   int y = chartHeight - height - InpPanelYOffset;
+   
+   //--- Check if order book is available
+   if(!orderBookAvailable)
+   {
+      ObjectSetString(0, objPrefix + "StatusValue", OBJPROP_TEXT, "NO ORDER BOOK DATA");
+      ObjectSetInteger(0, objPrefix + "StatusValue", OBJPROP_COLOR, clrOrangeRed);
+      ObjectSetString(0, objPrefix + "ImbalanceValue", OBJPROP_TEXT, "N/A");
+      ChartRedraw();
+      return;
+   }
+   
+   //--- Update positions (in case chart resized)
+   ObjectSetInteger(0, objPrefix + "Panel", OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, objPrefix + "Panel", OBJPROP_YDISTANCE, y);
+   
+   //--- Imbalance
+   string imbalanceText = DoubleToString(currentAnalysis.imbalancePercent, 1) + "%";
+   ObjectSetString(0, objPrefix + "ImbalanceValue", OBJPROP_TEXT, imbalanceText);
+   color imbalanceColor = (currentAnalysis.imbalancePercent > 50) ? InpBuyColor : InpSellColor;
+   ObjectSetInteger(0, objPrefix + "ImbalanceValue", OBJPROP_COLOR, imbalanceColor);
+   
+   //--- Bid/Ask volumes
+   ObjectSetString(0, objPrefix + "BidValue", OBJPROP_TEXT, DoubleToString(currentAnalysis.totalBidVolume, 2));
+   ObjectSetString(0, objPrefix + "AskValue", OBJPROP_TEXT, DoubleToString(currentAnalysis.totalAskVolume, 2));
+   ObjectSetString(0, objPrefix + "RatioValue", OBJPROP_TEXT, DoubleToString(currentAnalysis.bidAskRatio, 2));
+   
+   //--- Strongest levels
+   int digits = (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS);
+   ObjectSetString(0, objPrefix + "BidWallPrice", OBJPROP_TEXT, DoubleToString(currentAnalysis.strongestBidPrice, digits));
+   ObjectSetString(0, objPrefix + "BidWallVol", OBJPROP_TEXT, DoubleToString(currentAnalysis.strongestBidVolume, 2));
+   ObjectSetString(0, objPrefix + "AskWallPrice", OBJPROP_TEXT, DoubleToString(currentAnalysis.strongestAskPrice, digits));
+   ObjectSetString(0, objPrefix + "AskWallVol", OBJPROP_TEXT, DoubleToString(currentAnalysis.strongestAskVolume, 2));
+   
+   //--- Pump/Dump scores
+   ObjectSetString(0, objPrefix + "PumpValue", OBJPROP_TEXT, IntegerToString(currentAnalysis.pumpScore));
+   int pumpBarWidth = (int)(180 * currentAnalysis.pumpScore / 100.0);
+   ObjectSetInteger(0, objPrefix + "PumpBar", OBJPROP_XSIZE, pumpBarWidth);
+   
+   ObjectSetString(0, objPrefix + "DumpValue", OBJPROP_TEXT, IntegerToString(currentAnalysis.dumpScore));
+   int dumpBarWidth = (int)(180 * currentAnalysis.dumpScore / 100.0);
+   ObjectSetInteger(0, objPrefix + "DumpBar", OBJPROP_XSIZE, dumpBarWidth);
+   
+   //--- Status
+   color statusColor = clrLimeGreen;
+   if(currentAnalysis.signal == "PUMP_ALERT")
+      statusColor = clrOrange;
+   else if(currentAnalysis.signal == "DUMP_ALERT")
+      statusColor = clrOrangeRed;
+   
+   ObjectSetString(0, objPrefix + "StatusValue", OBJPROP_TEXT, currentAnalysis.signal);
+   ObjectSetInteger(0, objPrefix + "StatusValue", OBJPROP_COLOR, statusColor);
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Check for alerts                                                  |
+//+------------------------------------------------------------------+
+void CheckAlerts()
+{
+   if(TimeCurrent() - lastAlertTime < 60) return; // 1 min cooldown
+   
+   if(currentAnalysis.signal == "PUMP_ALERT")
+   {
+      string msg = StringFormat("%s - PUMP ALERT! Score: %d, Imbalance: %.1f%%", 
+                                Symbol(), currentAnalysis.pumpScore, currentAnalysis.imbalancePercent);
+      Alert(msg);
+      lastAlertTime = TimeCurrent();
+   }
+   else if(currentAnalysis.signal == "DUMP_ALERT")
+   {
+      string msg = StringFormat("%s - DUMP ALERT! Score: %d, Imbalance: %.1f%%", 
+                                Symbol(), currentAnalysis.dumpScore, currentAnalysis.imbalancePercent);
+      Alert(msg);
+      lastAlertTime = TimeCurrent();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Log analysis to file                                              |
+//+------------------------------------------------------------------+
+void LogAnalysis()
+{
+   if(fileHandle == INVALID_HANDLE) return;
+   
+   FileWrite(fileHandle,
+             TimeToString(currentAnalysis.timestamp),
+             currentAnalysis.signal,
+             IntegerToString(currentAnalysis.pumpScore),
+             IntegerToString(currentAnalysis.dumpScore),
+             DoubleToString(currentAnalysis.imbalancePercent, 2),
+             DoubleToString(currentAnalysis.totalBidVolume, 2),
+             DoubleToString(currentAnalysis.totalAskVolume, 2),
+             DoubleToString(currentAnalysis.bidAskRatio, 2),
+             DoubleToString(SymbolInfoDouble(Symbol(), SYMBOL_BID), (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS)),
+             DoubleToString(currentAnalysis.currentATR, (int)SymbolInfoInteger(Symbol(), SYMBOL_DIGITS)));
+   
+   FileFlush(fileHandle);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create label                                             |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, int x, int y, string text, color clr, int size, string font)
+{
+   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create rectangle                                         |
+//+------------------------------------------------------------------+
+void CreateRect(string name, int x, int y, int width, int height, color clr)
+{
+   ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+}
+//+------------------------------------------------------------------+

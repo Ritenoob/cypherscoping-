@@ -1,0 +1,53 @@
+{
+  "name": "mirko-kucoin-futures",
+  "version": "3.5.0",
+  "description": "MIRKO V3.5 - KuCoin Perpetual Futures Trading System with Advanced Screener and Optimizer",
+  "main": "core/server.js",
+  "scripts": {
+    "start": "node core/server.js",
+    "dev": "node --watch core/server.js",
+    "screener": "node screener/screenerEngine.js",
+    "optimizer": "node strategy/optimizer/optimizerEngine.js",
+    "backtest": "node scripts/backtest-runner.js",
+    "test": "node --test",
+    "test:unit": "jest --testPathPattern=tests/unit",
+    "test:property": "node --test test/property",
+    "adjust-weights": "node core/adjust-weights.js",
+    "fetch-data": "node research/data/fetch_ohlcv.js",
+    "export-signals": "node scripts/export-signals.js",
+    "test:integration": "jest --testPathPattern=tests/integration",
+    "test:critical": "jest --testPathPattern=tests/critical"
+  },
+  "keywords": [
+    "kucoin",
+    "futures",
+    "trading",
+    "dashboard",
+    "cryptocurrency",
+    "signals",
+    "screener",
+    "optimizer",
+    "mirko",
+    "v3.5"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "decimal.js": "^10.4.3",
+    "dotenv": "^16.6.1",
+    "events": "^3.3.0",
+    "express": "^4.22.1",
+    "fs": "^0.0.1-security",
+    "http": "^0.0.1-security",
+    "https": "^1.0.0",
+    "path": "^0.12.7",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "fast-check": "^3.15.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

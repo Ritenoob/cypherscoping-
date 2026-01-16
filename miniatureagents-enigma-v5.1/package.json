@@ -1,0 +1,40 @@
+{
+  "name": "miniature-enigma",
+  "version": "5.1.0",
+  "description": "AI Agent-Orchestrated KuCoin Futures Trading System",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:paper": "BOT_MODE=paper node index.js",
+    "start:live": "BOT_MODE=live node index.js",
+    "dashboard": "node server.js",
+    "test": "node tests/run-all.js",
+    "test:agents": "node tests/agents.test.js",
+    "test:indicators": "node tests/indicators.test.js",
+    "test:risk": "node tests/risk.test.js",
+    "backtest": "node scripts/backtest-runner.js",
+    "optimize": "node scripts/optimize.js",
+    "walk-forward": "node scripts/walk-forward.js",
+    "build": "bash scripts/build-repo.sh",
+    "health": "node scripts/health-check.js",
+    "export": "node scripts/export-signals.js"
+  },
+  "keywords": [
+    "trading",
+    "bot",
+    "kucoin",
+    "futures",
+    "ai-agents",
+    "algorithmic-trading"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "decimal.js": "^10.6.0",
+    "dotenv": "^17.2.3",
+    "ws": "^8.19.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

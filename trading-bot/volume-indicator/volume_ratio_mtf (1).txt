@@ -1,0 +1,493 @@
+//+------------------------------------------------------------------+
+//|                                VolumeRatioDashboard.mq5          |
+//|                   Multi-Timeframe Volume Pressure Dashboard       |
+//|                        With Backtesting & Signal Strength         |
+//+------------------------------------------------------------------+
+#property copyright "Volume Ratio Dashboard"
+#property version   "1.00"
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots   0
+
+//--- Input parameters
+input group "=== Timeframe Settings ==="
+input bool     InpShowM5 = true;           // Show M5 Analysis
+input bool     InpShowM15 = true;          // Show M15 Analysis
+input bool     InpShowH1 = true;           // Show H1 Analysis
+input bool     InpShowH2 = true;           // Show H2 Analysis
+
+input group "=== Volume Ratio Settings ==="
+input int      InpLookback = 30;           // Lookback Period (bars)
+input double   InpBuyThreshold = 1.5;      // Strong Buy Threshold
+input double   InpSellThreshold = 0.67;    // Strong Sell Threshold
+input double   InpExtremeThreshold = 2.5;  // Extreme Pressure Threshold
+
+input group "=== Signal Strength Weights ==="
+input int      InpWeightRatio = 40;        // Weight: Volume Ratio (%)
+input int      InpWeightAlignment = 30;    // Weight: MTF Alignment (%)
+input int      InpWeightMomentum = 30;     // Weight: Momentum (%)
+
+input group "=== Dashboard Settings ==="
+input int      InpPanelX = 20;             // Panel X Position
+input int      InpPanelY = 50;             // Panel Y Position
+input color    InpPanelColor = clrBlack;   // Panel Background
+input color    InpTextColor = clrWhite;    // Text Color
+input int      InpFontSize = 9;            // Font Size
+
+input group "=== Backtesting ==="
+input bool     InpEnableBacktest = true;   // Enable Backtesting
+input bool     InpLogSignals = true;       // Log Signals to File
+input int      InpMinSignalStrength = 60;  // Minimum Signal Strength
+
+//--- Dashboard object names
+string objPrefix = "VR_Dashboard_";
+
+//--- Timeframe array
+ENUM_TIMEFRAMES timeframes[] = {PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H2};
+string tfNames[] = {"M5", "M15", "H1", "H2"};
+bool tfEnabled[] = {true, true, true, true};
+
+//--- Signal structure
+struct SignalData
+{
+   datetime timestamp;
+   string timeframe;
+   double volumeRatio;
+   double buyVolume;
+   double sellVolume;
+   int strength;
+   string signal;  // "BUY", "SELL", "NEUTRAL"
+   double price;
+};
+
+//--- Global variables
+SignalData currentSignals[4];
+int fileHandle = INVALID_HANDLE;
+datetime lastBarTime = 0;
+
+//+------------------------------------------------------------------+
+//| Custom indicator initialization                                  |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   //--- Set enabled timeframes
+   tfEnabled[0] = InpShowM5;
+   tfEnabled[1] = InpShowM15;
+   tfEnabled[2] = InpShowH1;
+   tfEnabled[3] = InpShowH2;
+   
+   //--- Initialize dashboard
+   CreateDashboard();
+   
+   //--- Open log file if backtesting enabled
+   if(InpEnableBacktest && InpLogSignals)
+   {
+      string filename = "VolumeRatio_" + Symbol() + "_Signals.csv";
+      fileHandle = FileOpen(filename, FILE_WRITE|FILE_CSV|FILE_ANSI, ",");
+      if(fileHandle != INVALID_HANDLE)
+      {
+         FileWrite(fileHandle, "Timestamp", "Timeframe", "Signal", "Strength", 
+                   "VolumeRatio", "BuyVolume", "SellVolume", "Price");
+      }
+   }
+   
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator deinitialization                                |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   //--- Delete all dashboard objects
+   ObjectsDeleteAll(0, objPrefix);
+   
+   //--- Close log file
+   if(fileHandle != INVALID_HANDLE)
+   {
+      FileClose(fileHandle);
+      fileHandle = INVALID_HANDLE;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator iteration                                       |
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+{
+   //--- Check for new bar
+   if(time[rates_total-1] == lastBarTime)
+      return(rates_total);
+   
+   lastBarTime = time[rates_total-1];
+   
+   //--- Calculate signals for all timeframes
+   for(int i = 0; i < 4; i++)
+   {
+      if(!tfEnabled[i]) continue;
+      
+      currentSignals[i] = CalculateVolumeRatio(timeframes[i], i);
+   }
+   
+   //--- Calculate overall signal strength
+   int overallStrength = CalculateOverallStrength();
+   string overallSignal = DetermineOverallSignal();
+   
+   //--- Update dashboard
+   UpdateDashboard(overallSignal, overallStrength);
+   
+   //--- Log signals if enabled
+   if(InpLogSignals && fileHandle != INVALID_HANDLE)
+   {
+      LogSignals();
+   }
+   
+   //--- Send alert if strong signal
+   if(overallStrength >= InpMinSignalStrength)
+   {
+      SendSignalAlert(overallSignal, overallStrength);
+   }
+   
+   return(rates_total);
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Volume Ratio for specific timeframe                    |
+//+------------------------------------------------------------------+
+SignalData CalculateVolumeRatio(ENUM_TIMEFRAMES tf, int index)
+{
+   SignalData signal;
+   signal.timeframe = tfNames[index];
+   signal.timestamp = iTime(Symbol(), tf, 0);
+   signal.price = iClose(Symbol(), tf, 0);
+   
+   double buyVol = 0, sellVol = 0;
+   
+   //--- Calculate buy/sell volumes over lookback period
+   for(int i = 0; i < InpLookback; i++)
+   {
+      double open = iOpen(Symbol(), tf, i);
+      double close = iClose(Symbol(), tf, i);
+      long vol = iVolume(Symbol(), tf, i);
+      
+      if(close > open)
+         buyVol += (double)vol;
+      else if(close < open)
+         sellVol += (double)vol;
+      else
+         // Doji - split volume
+         {
+            buyVol += (double)vol * 0.5;
+            sellVol += (double)vol * 0.5;
+         }
+   }
+   
+   signal.buyVolume = buyVol;
+   signal.sellVolume = sellVol;
+   
+   //--- Calculate ratio with safety
+   double eps = 1e-9;
+   signal.volumeRatio = buyVol / (sellVol + eps);
+   
+   //--- Determine signal and strength
+   if(signal.volumeRatio >= InpBuyThreshold)
+   {
+      signal.signal = "BUY";
+      // Scale strength 60-100 based on ratio
+      signal.strength = (int)(60 + 40 * MathMin((signal.volumeRatio - InpBuyThreshold) / (InpExtremeThreshold - InpBuyThreshold), 1.0));
+   }
+   else if(signal.volumeRatio <= InpSellThreshold)
+   {
+      signal.signal = "SELL";
+      // Scale strength 60-100 based on inverse ratio
+      double inverseRatio = 1.0 / (signal.volumeRatio + eps);
+      signal.strength = (int)(60 + 40 * MathMin((inverseRatio - (1.0/InpSellThreshold)) / (InpExtremeThreshold - (1.0/InpSellThreshold)), 1.0));
+   }
+   else
+   {
+      signal.signal = "NEUTRAL";
+      // Neutral strength 0-59
+      signal.strength = (int)(50 * (1.0 - MathAbs(signal.volumeRatio - 1.0)));
+   }
+   
+   return signal;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate overall signal strength from all timeframes            |
+//+------------------------------------------------------------------+
+int CalculateOverallStrength()
+{
+   int activeCount = 0;
+   int totalStrength = 0;
+   int buyCount = 0, sellCount = 0;
+   
+   //--- Count active signals
+   for(int i = 0; i < 4; i++)
+   {
+      if(!tfEnabled[i]) continue;
+      
+      activeCount++;
+      totalStrength += currentSignals[i].strength;
+      
+      if(currentSignals[i].signal == "BUY") buyCount++;
+      else if(currentSignals[i].signal == "SELL") sellCount++;
+   }
+   
+   if(activeCount == 0) return 0;
+   
+   //--- Calculate average strength
+   double avgStrength = (double)totalStrength / activeCount;
+   
+   //--- Calculate alignment bonus
+   double alignment = (double)MathMax(buyCount, sellCount) / activeCount;
+   
+   //--- Calculate momentum (difference between fastest and slowest TF)
+   double momentumScore = 0;
+   if(tfEnabled[0] && tfEnabled[3])
+   {
+      double ratioDiff = MathAbs(currentSignals[0].volumeRatio - currentSignals[3].volumeRatio);
+      momentumScore = MathMin(ratioDiff / 2.0, 1.0) * 100;
+   }
+   
+   //--- Weighted combination
+   double ratioWeight = InpWeightRatio / 100.0;
+   double alignWeight = InpWeightAlignment / 100.0;
+   double momentumWeight = InpWeightMomentum / 100.0;
+   
+   int finalStrength = (int)(avgStrength * ratioWeight + 
+                             alignment * 100 * alignWeight + 
+                             momentumScore * momentumWeight);
+   
+   return MathMin(finalStrength, 100);
+}
+
+//+------------------------------------------------------------------+
+//| Determine overall signal direction                               |
+//+------------------------------------------------------------------+
+string DetermineOverallSignal()
+{
+   int buyCount = 0, sellCount = 0;
+   
+   for(int i = 0; i < 4; i++)
+   {
+      if(!tfEnabled[i]) continue;
+      
+      if(currentSignals[i].signal == "BUY") buyCount++;
+      else if(currentSignals[i].signal == "SELL") sellCount++;
+   }
+   
+   if(buyCount > sellCount) return "BUY";
+   else if(sellCount > buyCount) return "SELL";
+   else return "NEUTRAL";
+}
+
+//+------------------------------------------------------------------+
+//| Create dashboard objects                                          |
+//+------------------------------------------------------------------+
+void CreateDashboard()
+{
+   int x = InpPanelX;
+   int y = InpPanelY;
+   int width = 350;
+   int height = 280;
+   
+   //--- Main panel background
+   CreateRectangle(objPrefix + "Panel", x, y, width, height, InpPanelColor);
+   
+   //--- Title
+   CreateLabel(objPrefix + "Title", x + 10, y + 10, "VOLUME RATIO DASHBOARD", clrGold, 11, "Arial Bold");
+   CreateLabel(objPrefix + "Symbol", x + 10, y + 30, Symbol(), InpTextColor, 9, "Arial");
+   
+   //--- Timeframe headers
+   int yOffset = y + 55;
+   CreateLabel(objPrefix + "HeaderTF", x + 10, yOffset, "TF", InpTextColor, InpFontSize, "Arial Bold");
+   CreateLabel(objPrefix + "HeaderSignal", x + 60, yOffset, "Signal", InpTextColor, InpFontSize, "Arial Bold");
+   CreateLabel(objPrefix + "HeaderStrength", x + 120, yOffset, "Strength", InpTextColor, InpFontSize, "Arial Bold");
+   CreateLabel(objPrefix + "HeaderRatio", x + 195, yOffset, "Ratio", InpTextColor, InpFontSize, "Arial Bold");
+   CreateLabel(objPrefix + "HeaderVolumes", x + 250, yOffset, "Buy/Sell", InpTextColor, InpFontSize, "Arial Bold");
+   
+   //--- Separator line
+   yOffset += 20;
+   CreateRectangle(objPrefix + "Line1", x + 5, yOffset, width - 10, 1, clrDimGray);
+   
+   //--- Overall signal section
+   yOffset = y + height - 55;
+   CreateRectangle(objPrefix + "Line2", x + 5, yOffset, width - 10, 1, clrDimGray);
+   yOffset += 10;
+   CreateLabel(objPrefix + "OverallLabel", x + 10, yOffset, "OVERALL SIGNAL:", clrGold, 10, "Arial Bold");
+   CreateLabel(objPrefix + "OverallSignal", x + 140, yOffset, "---", InpTextColor, 10, "Arial Bold");
+   CreateLabel(objPrefix + "OverallStrength", x + 220, yOffset, "0%", InpTextColor, 10, "Arial Bold");
+}
+
+//+------------------------------------------------------------------+
+//| Update dashboard with current data                               |
+//+------------------------------------------------------------------+
+void UpdateDashboard(string overallSignal, int overallStrength)
+{
+   int x = InpPanelX;
+   int y = InpPanelY + 80;
+   int lineHeight = 25;
+   
+   //--- Update each timeframe
+   for(int i = 0; i < 4; i++)
+   {
+      if(!tfEnabled[i]) continue;
+      
+      int yPos = y + (i * lineHeight);
+      
+      //--- Timeframe name
+      string tfLabel = objPrefix + "TF_" + IntegerToString(i);
+      if(ObjectFind(0, tfLabel) < 0)
+         CreateLabel(tfLabel, x + 10, yPos, tfNames[i], InpTextColor, InpFontSize, "Arial");
+      else
+         ObjectSetString(0, tfLabel, OBJPROP_TEXT, tfNames[i]);
+      
+      //--- Signal
+      color signalColor = clrGray;
+      if(currentSignals[i].signal == "BUY") signalColor = clrLimeGreen;
+      else if(currentSignals[i].signal == "SELL") signalColor = clrOrangeRed;
+      
+      string sigLabel = objPrefix + "Signal_" + IntegerToString(i);
+      if(ObjectFind(0, sigLabel) < 0)
+         CreateLabel(sigLabel, x + 60, yPos, currentSignals[i].signal, signalColor, InpFontSize, "Arial Bold");
+      else
+      {
+         ObjectSetString(0, sigLabel, OBJPROP_TEXT, currentSignals[i].signal);
+         ObjectSetInteger(0, sigLabel, OBJPROP_COLOR, signalColor);
+      }
+      
+      //--- Strength with bar
+      string strengthText = IntegerToString(currentSignals[i].strength) + "%";
+      string strLabel = objPrefix + "Strength_" + IntegerToString(i);
+      if(ObjectFind(0, strLabel) < 0)
+         CreateLabel(strLabel, x + 120, yPos, strengthText, InpTextColor, InpFontSize, "Arial");
+      else
+         ObjectSetString(0, strLabel, OBJPROP_TEXT, strengthText);
+      
+      //--- Strength bar
+      int barWidth = (int)(50 * currentSignals[i].strength / 100.0);
+      color barColor = (currentSignals[i].strength >= 70) ? clrLimeGreen : 
+                       (currentSignals[i].strength >= 50) ? clrGold : clrDimGray;
+      string barName = objPrefix + "Bar_" + IntegerToString(i);
+      if(ObjectFind(0, barName) < 0)
+         CreateRectangle(barName, x + 165, yPos + 3, barWidth, 12, barColor);
+      else
+      {
+         ObjectSetInteger(0, barName, OBJPROP_XSIZE, barWidth);
+         ObjectSetInteger(0, barName, OBJPROP_BGCOLOR, barColor);
+      }
+      
+      //--- Volume ratio
+      string ratioText = DoubleToString(currentSignals[i].volumeRatio, 2);
+      string ratioLabel = objPrefix + "Ratio_" + IntegerToString(i);
+      if(ObjectFind(0, ratioLabel) < 0)
+         CreateLabel(ratioLabel, x + 225, yPos, ratioText, InpTextColor, InpFontSize, "Arial");
+      else
+         ObjectSetString(0, ratioLabel, OBJPROP_TEXT, ratioText);
+      
+      //--- Buy/Sell volumes (compact)
+      string volText = DoubleToString(currentSignals[i].buyVolume / 1000, 1) + "k/" + 
+                       DoubleToString(currentSignals[i].sellVolume / 1000, 1) + "k";
+      string volLabel = objPrefix + "Vol_" + IntegerToString(i);
+      if(ObjectFind(0, volLabel) < 0)
+         CreateLabel(volLabel, x + 250, yPos, volText, clrDimGray, InpFontSize - 1, "Arial");
+      else
+         ObjectSetString(0, volLabel, OBJPROP_TEXT, volText);
+   }
+   
+   //--- Update overall signal
+   color overallColor = clrGray;
+   if(overallSignal == "BUY") overallColor = clrLimeGreen;
+   else if(overallSignal == "SELL") overallColor = clrOrangeRed;
+   
+   ObjectSetString(0, objPrefix + "OverallSignal", OBJPROP_TEXT, overallSignal);
+   ObjectSetInteger(0, objPrefix + "OverallSignal", OBJPROP_COLOR, overallColor);
+   
+   string strengthText = IntegerToString(overallStrength) + "%";
+   ObjectSetString(0, objPrefix + "OverallStrength", OBJPROP_TEXT, strengthText);
+   ObjectSetInteger(0, objPrefix + "OverallStrength", OBJPROP_COLOR, overallColor);
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Log signals to CSV file                                          |
+//+------------------------------------------------------------------+
+void LogSignals()
+{
+   if(fileHandle == INVALID_HANDLE) return;
+   
+   for(int i = 0; i < 4; i++)
+   {
+      if(!tfEnabled[i]) continue;
+      
+      FileWrite(fileHandle,
+                TimeToString(currentSignals[i].timestamp),
+                currentSignals[i].timeframe,
+                currentSignals[i].signal,
+                IntegerToString(currentSignals[i].strength),
+                DoubleToString(currentSignals[i].volumeRatio, 4),
+                DoubleToString(currentSignals[i].buyVolume, 2),
+                DoubleToString(currentSignals[i].sellVolume, 2),
+                DoubleToString(currentSignals[i].price, 5));
+   }
+   
+   FileFlush(fileHandle);
+}
+
+//+------------------------------------------------------------------+
+//| Send alert for strong signals                                    |
+//+------------------------------------------------------------------+
+void SendSignalAlert(string signal, int strength)
+{
+   static datetime lastAlert = 0;
+   
+   if(TimeCurrent() - lastAlert < 300) return;  // 5 min cooldown
+   
+   string message = StringFormat("%s - Volume Ratio %s Signal (Strength: %d%%)", 
+                                 Symbol(), signal, strength);
+   Alert(message);
+   lastAlert = TimeCurrent();
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create label object                                      |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, int x, int y, string text, color clr, int size, string font)
+{
+   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create rectangle object                                  |
+//+------------------------------------------------------------------+
+void CreateRectangle(string name, int x, int y, int width, int height, color clr)
+{
+   ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+}
+//+------------------------------------------------------------------+

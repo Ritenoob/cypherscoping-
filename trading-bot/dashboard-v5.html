@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KuCoin Futures Trading Bot v5.0</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a1a;
+      color: #e4e4e4;
+      min-height: 100vh;
+    }
+    
+    /* Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 20px;
+      background: #0d1421;
+      border-bottom: 1px solid #1e2a3a;
+    }
+    
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #00d4aa, #00a085);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      color: #000;
+    }
+    
+    .logo-text {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #00d4aa;
+    }
+    
+    .version-badge {
+      background: rgba(0, 212, 170, 0.15);
+      color: #00d4aa;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      margin-left: 10px;
+    }
+    
+    .header-stats {
+      display: flex;
+      gap: 30px;
+      font-size: 0.85rem;
+    }
+    
+    .header-stat {
+      text-align: center;
+    }
+    
+    .header-stat-label {
+      color: #666;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+    }
+    
+    .header-stat-value {
+      font-weight: 600;
+    }
+    
+    .header-stat-value.positive { color: #00d4aa; }
+    .header-stat-value.negative { color: #ff4757; }
+    
+    .connection-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #00d4aa;
+      font-size: 0.85rem;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #00d4aa;
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    /* Main Layout */
+    .main-container {
+      display: grid;
+      grid-template-columns: 200px 1fr 320px;
+      height: calc(100vh - 56px);
+    }
+    
+    /* Sidebar - Coin List */
+    .sidebar {
+      background: #0d1421;
+      border-right: 1px solid #1e2a3a;
+      overflow-y: auto;
+    }
+    
+    .coin-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 15px;
+      border-bottom: 1px solid #1e2a3a;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    .coin-item:hover {
+      background: rgba(0, 212, 170, 0.05);
+    }
+    
+    .coin-item.active {
+      background: rgba(0, 212, 170, 0.1);
+      border-left: 3px solid #00d4aa;
+    }
+    
+    .coin-name {
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    
+    .coin-price {
+      font-size: 0.8rem;
+      color: #888;
+    }
+    
+    .coin-change {
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    
+    .coin-signal {
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+    
+    .coin-signal.buy { background: rgba(0, 212, 170, 0.2); color: #00d4aa; }
+    .coin-signal.sell { background: rgba(255, 71, 87, 0.2); color: #ff4757; }
+    .coin-signal.neutral { background: rgba(255, 165, 2, 0.2); color: #ffa502; }
+    
+    /* Center Panel */
+    .center-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    
+    /* Signal Generator */
+    .signal-generator {
+      background: #0d1421;
+      padding: 20px;
+      border-bottom: 1px solid #1e2a3a;
+    }
+    
+    .signal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    
+    .signal-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9rem;
+      color: #888;
+    }
+    
+    .signal-range {
+      font-size: 0.8rem;
+      color: #666;
+    }
+    
+    .signal-display {
+      text-align: center;
+      padding: 30px 0;
+    }
+    
+    .signal-label {
+      font-size: 1.5rem;
+      font-weight: 300;
+      letter-spacing: 2px;
+      margin-bottom: 10px;
+    }
+    
+    .signal-label.bullish { color: #00d4aa; }
+    .signal-label.bearish { color: #ff4757; }
+    .signal-label.neutral { color: #ffa502; }
+    
+    .signal-score {
+      font-size: 4rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+    
+    .signal-score.positive { color: #00d4aa; }
+    .signal-score.negative { color: #ff4757; }
+    .signal-score.neutral { color: #ffa502; }
+    
+    /* Score Slider */
+    .score-slider-container {
+      margin: 20px 0;
+      position: relative;
+    }
+    
+    .score-slider {
+      width: 100%;
+      height: 8px;
+      background: linear-gradient(90deg, 
+        #ff4757 0%, 
+        #ff6b6b 20%, 
+        #ffa502 40%, 
+        #ffd93d 50%, 
+        #a8e063 60%, 
+        #6bcf7f 80%, 
+        #00d4aa 100%
+      );
+      border-radius: 4px;
+      position: relative;
+    }
+    
+    .score-indicator {
+      position: absolute;
+      top: -6px;
+      width: 20px;
+      height: 20px;
+      background: #fff;
+      border-radius: 50%;
+      transform: translateX(-50%);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      transition: left 0.3s ease;
+    }
+    
+    .score-labels {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 8px;
+      font-size: 0.75rem;
+      color: #666;
+    }
+    
+    .confidence-badge {
+      display: inline-block;
+      margin-top: 15px;
+      padding: 6px 16px;
+      background: rgba(255, 165, 2, 0.15);
+      color: #ffa502;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 500;
+    }
+    
+    .confidence-badge.high {
+      background: rgba(0, 212, 170, 0.15);
+      color: #00d4aa;
+    }
+    
+    .confidence-badge.low {
+      background: rgba(255, 71, 87, 0.15);
+      color: #ff4757;
+    }
+    
+    /* Indicator Breakdown */
+    .indicator-breakdown {
+      background: #0d1421;
+      padding: 20px;
+      flex: 1;
+      overflow-y: auto;
+    }
+    
+    .section-title {
+      font-size: 0.85rem;
+      color: #888;
+      margin-bottom: 15px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #1e2a3a;
+    }
+    
+    .indicator-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid #1e2a3a;
+    }
+    
+    .indicator-name {
+      font-weight: 500;
+      font-size: 0.9rem;
+    }
+    
+    .indicator-status {
+      font-size: 0.85rem;
+      color: #888;
+    }
+    
+    .indicator-score {
+      font-weight: 600;
+      min-width: 40px;
+      text-align: right;
+    }
+    
+    .indicator-score.positive { color: #00d4aa; }
+    .indicator-score.negative { color: #ff4757; }
+    .indicator-score.neutral { color: #888; }
+    
+    /* Order Book */
+    .order-book {
+      background: #0d1421;
+      padding: 20px;
+      border-top: 1px solid #1e2a3a;
+    }
+    
+    .order-book-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+    
+    .entry-level-btn {
+      background: rgba(0, 212, 170, 0.15);
+      color: #00d4aa;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    
+    .order-book-table {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    
+    .order-column h4 {
+      font-size: 0.8rem;
+      color: #888;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+    
+    .order-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 8px;
+      font-size: 0.8rem;
+      border-radius: 3px;
+    }
+    
+    .bid-row {
+      background: rgba(0, 212, 170, 0.1);
+    }
+    
+    .ask-row {
+      background: rgba(255, 71, 87, 0.1);
+    }
+    
+    .bid-price { color: #00d4aa; }
+    .ask-price { color: #ff4757; }
+    
+    /* Right Panel - Trade Execution */
+    .right-panel {
+      background: #0d1421;
+      border-left: 1px solid #1e2a3a;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .trade-panel {
+      padding: 20px;
+      border-bottom: 1px solid #1e2a3a;
+    }
+    
+    .trade-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    
+    .trade-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+    }
+    
+    .trade-badge {
+      background: rgba(0, 212, 170, 0.15);
+      color: #00d4aa;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 0.7rem;
+    }
+    
+    .stats-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    
+    .stat-item {
+      text-align: center;
+    }
+    
+    .stat-label {
+      font-size: 0.7rem;
+      color: #666;
+      text-transform: uppercase;
+    }
+    
+    .stat-value {
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+    
+    .stat-value.highlight { color: #00d4aa; }
+    
+    /* Input Groups */
+    .input-group {
+      margin-bottom: 15px;
+    }
+    
+    .input-label {
+      font-size: 0.8rem;
+      color: #888;
+      margin-bottom: 6px;
+      display: block;
+    }
+    
+    .input-field {
+      width: 100%;
+      background: #0a0a1a;
+      border: 1px solid #1e2a3a;
+      border-radius: 6px;
+      padding: 10px 12px;
+      color: #fff;
+      font-size: 0.9rem;
+    }
+    
+    .input-field:focus {
+      outline: none;
+      border-color: #00d4aa;
+    }
+    
+    /* Toggle */
+    .toggle-group {
+      display: flex;
+      background: #0a0a1a;
+      border-radius: 6px;
+      padding: 3px;
+    }
+    
+    .toggle-btn {
+      flex: 1;
+      padding: 8px;
+      border: none;
+      background: transparent;
+      color: #888;
+      font-size: 0.8rem;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+    
+    .toggle-btn.active {
+      background: #00d4aa;
+      color: #000;
+      font-weight: 600;
+    }
+    
+    /* Leverage Slider */
+    .leverage-display {
+      text-align: center;
+      margin: 15px 0;
+    }
+    
+    .leverage-value {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #00d4aa;
+    }
+    
+    .leverage-slider {
+      width: 100%;
+      margin: 10px 0;
+    }
+    
+    /* Trade Buttons */
+    .trade-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    
+    .trade-btn {
+      padding: 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: transform 0.1s;
+    }
+    
+    .trade-btn:active {
+      transform: scale(0.98);
+    }
+    
+    .trade-btn.long {
+      background: linear-gradient(135deg, #00d4aa, #00a085);
+      color: #000;
+    }
+    
+    .trade-btn.short {
+      background: linear-gradient(135deg, #ff4757, #c0392b);
+      color: #fff;
+    }
+    
+    /* Entry Details */
+    .entry-details {
+      padding: 15px 20px;
+      background: #080810;
+      border-bottom: 1px solid #1e2a3a;
+    }
+    
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 0.8rem;
+    }
+    
+    .detail-label {
+      color: #666;
+    }
+    
+    .detail-value {
+      font-weight: 500;
+    }
+    
+    .detail-value.long { color: #00d4aa; }
+    .detail-value.short { color: #ff4757; }
+    
+    /* Active Positions */
+    .positions-panel {
+      padding: 20px;
+      border-bottom: 1px solid #1e2a3a;
+    }
+    
+    .positions-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+    
+    .positions-count {
+      background: #1e2a3a;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 0.75rem;
+    }
+    
+    .no-positions {
+      text-align: center;
+      color: #666;
+      font-size: 0.85rem;
+      padding: 20px;
+    }
+    
+    /* Activity Log */
+    .activity-log {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+    }
+    
+    .log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    
+    .clear-btn {
+      background: transparent;
+      border: 1px solid #1e2a3a;
+      color: #888;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    
+    .log-entry {
+      font-size: 0.75rem;
+      padding: 6px 0;
+      border-bottom: 1px solid #1e2a3a;
+      display: flex;
+      gap: 8px;
+    }
+    
+    .log-time {
+      color: #666;
+      min-width: 70px;
+    }
+    
+    .log-message {
+      color: #00d4aa;
+    }
+    
+    .log-message.warning { color: #ffa502; }
+    .log-message.error { color: #ff4757; }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon">KF</div>
+      <span class="logo-text">KuCoin Futures</span>
+      <span class="version-badge">v5.0 Fee-Adjusted ROI</span>
+    </div>
+    
+    <div class="header-stats">
+      <div class="header-stat">
+        <div class="header-stat-label">Balance</div>
+        <div class="header-stat-value" id="balance">$0.75</div>
+      </div>
+      <div class="header-stat">
+        <div class="header-stat-label">Positions</div>
+        <div class="header-stat-value" id="positions-count">0 / 5</div>
+      </div>
+      <div class="header-stat">
+        <div class="header-stat-label">Gross P&L</div>
+        <div class="header-stat-value positive" id="gross-pnl">+$0.00</div>
+      </div>
+    </div>
+    
+    <div class="connection-status">
+      <div class="status-dot"></div>
+      <span>Connected</span>
+    </div>
+  </div>
+  
+  <!-- Main Container -->
+  <div class="main-container">
+    <!-- Left Sidebar - Coin List -->
+    <div class="sidebar">
+      <div class="coin-item active" data-symbol="BTCUSDTM">
+        <div>
+          <div class="coin-name">BNB</div>
+          <div class="coin-price">$856.0888</div>
+        </div>
+        <div>
+          <div class="coin-change positive">+0.08%</div>
+          <div class="coin-signal neutral">NEUTRAL</div>
+        </div>
+      </div>
+      <div class="coin-item" data-symbol="XRPUSDTM">
+        <div>
+          <div class="coin-name">XRP</div>
+          <div class="coin-price">$1.8689</div>
+        </div>
+        <div>
+          <div class="coin-change positive">+0.08%</div>
+          <div class="coin-signal buy">BUY</div>
+        </div>
+      </div>
+      <!-- More coins populated dynamically -->
+    </div>
+    
+    <!-- Center Panel -->
+    <div class="center-panel">
+      <!-- Signal Generator -->
+      <div class="signal-generator">
+        <div class="signal-header">
+          <div class="signal-title">
+            <span>🎯</span>
+            <span>Signal Generator</span>
+          </div>
+          <div class="signal-range">-120 to +120</div>
+        </div>
+        
+        <div class="signal-display">
+          <div class="signal-label neutral" id="signal-label">NEUTRAL</div>
+          <div class="signal-score neutral" id="signal-score">-5</div>
+        </div>
+        
+        <div class="score-slider-container">
+          <div class="score-slider">
+            <div class="score-indicator" id="score-indicator" style="left: 48%;"></div>
+          </div>
+          <div class="score-labels">
+            <span>-120 Strong Sell</span>
+            <span>0</span>
+            <span>+120 Strong Buy</span>
+          </div>
+        </div>
+        
+        <div style="text-align: center;">
+          <div class="confidence-badge low" id="confidence-badge">LOW CONFIDENCE</div>
+        </div>
+      </div>
+      
+      <!-- Indicator Breakdown -->
+      <div class="indicator-breakdown">
+        <div class="section-title">Indicator Breakdown</div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">RSI</div>
+          <div class="indicator-status">Neutral (40-80)</div>
+          <div class="indicator-score neutral" id="rsi-score">0</div>
+        </div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">Williams %R</div>
+          <div class="indicator-status">Neutral</div>
+          <div class="indicator-score neutral" id="williams-score">0</div>
+        </div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">MACD</div>
+          <div class="indicator-status">Bearish momentum</div>
+          <div class="indicator-score negative" id="macd-score">-20</div>
+        </div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">AO</div>
+          <div class="indicator-status">Negative momentum</div>
+          <div class="indicator-score negative" id="ao-score">-15</div>
+        </div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">EMA Trend</div>
+          <div class="indicator-status">Bullish trend (Golden Cross)</div>
+          <div class="indicator-score positive" id="ema-score">+20</div>
+        </div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">Stochastic</div>
+          <div class="indicator-status">Neutral</div>
+          <div class="indicator-score neutral" id="stoch-score">0</div>
+        </div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">Bollinger</div>
+          <div class="indicator-status">Price below lower band</div>
+          <div class="indicator-score positive" id="bb-score">+10</div>
+        </div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">KDJ</div>
+          <div class="indicator-status">J-line neutral</div>
+          <div class="indicator-score neutral" id="kdj-score">0</div>
+        </div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">OBV</div>
+          <div class="indicator-status">Neutral slope</div>
+          <div class="indicator-score neutral" id="obv-score">0</div>
+        </div>
+        
+        <div class="indicator-row">
+          <div class="indicator-name">DOM</div>
+          <div class="indicator-status">Slight bid imbalance</div>
+          <div class="indicator-score neutral" id="dom-score">0</div>
+        </div>
+      </div>
+      
+      <!-- Order Book -->
+      <div class="order-book">
+        <div class="order-book-header">
+          <div class="section-title" style="margin: 0; border: none; padding: 0;">📊 Order Book</div>
+          <button class="entry-level-btn">9th Level Entry</button>
+        </div>
+        
+        <div class="order-book-table">
+          <div class="order-column">
+            <h4>BIDS (Buy)</h4>
+            <div class="order-row bid-row">
+              <span class="bid-price">$87942.5</span>
+              <span>3349.0000</span>
+            </div>
+            <div class="order-row bid-row">
+              <span class="bid-price">$87940.4</span>
+              <span>258.0000</span>
+            </div>
+            <div class="order-row bid-row">
+              <span class="bid-price">$87939.8</span>
+              <span>84.0000</span>
+            </div>
+            <div class="order-row bid-row">
+              <span class="bid-price">$87938.4</span>
+              <span>103.0000</span>
+            </div>
+            <div class="order-row bid-row">
+              <span class="bid-price">$87938.5</span>
+              <span>340.0000</span>
+            </div>
+          </div>
+          
+          <div class="order-column">
+            <h4>ASKS (Sell)</h4>
+            <div class="order-row ask-row">
+              <span class="ask-price">$87942.3</span>
+              <span>55.0000</span>
+            </div>
+            <div class="order-row ask-row">
+              <span class="ask-price">$87944.0</span>
+              <span>5.0000</span>
+            </div>
+            <div class="order-row ask-row">
+              <span class="ask-price">$87943.4</span>
+              <span>4.0000</span>
+            </div>
+            <div class="order-row ask-row">
+              <span class="ask-price">$87943.3</span>
+              <span>1.0000</span>
+            </div>
+            <div class="order-row ask-row">
+              <span class="ask-price">$87947.7</span>
+              <span>5.0000</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Right Panel - Trade Execution -->
+    <div class="right-panel">
+      <div class="trade-panel">
+        <div class="trade-header">
+          <div class="trade-title">
+            <span>⚡</span>
+            <span>Execute Trade</span>
+          </div>
+          <span class="trade-badge">V5.0 ROI-Based</span>
+        </div>
+        
+        <div class="input-group">
+          <label class="input-label">Position Size (% of Balance)</label>
+          <input type="number" class="input-field" id="position-size" value="0.5" step="0.1" min="0.1" max="100">
+        </div>
+        
+        <div class="input-group">
+          <label class="input-label">Leverage</label>
+          <div class="toggle-group">
+            <button class="toggle-btn active" id="leverage-auto">AUTO</button>
+            <button class="toggle-btn" id="leverage-manual">MANUAL</button>
+          </div>
+        </div>
+        
+        <div style="display: flex; justify-content: space-between; margin: 15px 0;">
+          <div>
+            <div class="stat-label">Recommended:</div>
+            <div class="stat-value highlight">50x</div>
+          </div>
+          <div>
+            <div class="stat-label">Volatility (ATR%):</div>
+            <div class="stat-value">0.12%</div>
+          </div>
+        </div>
+        
+        <div class="leverage-display">
+          <div class="stat-label">Using:</div>
+          <div class="leverage-value" id="leverage-value">50x</div>
+        </div>
+        
+        <input type="range" class="leverage-slider" id="leverage-slider" min="1" max="100" value="50">
+        
+        <div class="trade-buttons">
+          <button class="trade-btn long" id="btn-long">
+            <span>🟢</span> LONG
+          </button>
+          <button class="trade-btn short" id="btn-short">
+            <span>🔴</span> SHORT
+          </button>
+        </div>
+      </div>
+      
+      <!-- Entry Details -->
+      <div class="entry-details">
+        <div class="section-title" style="margin-bottom: 10px;">ENTRY DETAILS</div>
+        <div class="detail-row">
+          <span class="detail-label">Entry (9th Level)</span>
+          <span class="detail-value">L: <span class="long">$87937.9</span> | S: <span class="short">$87951.8</span></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Position Value</span>
+          <span class="detail-value">$0.19 (0.5% × 50x)</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Est. Lots</span>
+          <span class="detail-value">~0 lots</span>
+        </div>
+        
+        <div class="section-title" style="margin: 15px 0 10px 0;">RISK MANAGEMENT (ROI-BASED)</div>
+        <div class="detail-row">
+          <span class="detail-label">Stop Loss (0.5% ROI)</span>
+          <span class="detail-value">L: <span class="short">$87929.1</span> | S: <span class="long">$87959.8</span></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Take Profit (2.0% ROI)</span>
+          <span class="detail-value">L: <span class="long">$87973.1</span> | S: <span class="short">$87915.4</span></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Liquidation Est.</span>
+          <span class="detail-value">L: $86478.3 | S: $89718.8</span>
+        </div>
+        
+        <div class="section-title" style="margin: 15px 0 10px 0;">FEE & BREAK-EVEN (YES!)</div>
+        <div class="detail-row">
+          <span class="detail-label">Est. Round-Trip</span>
+          <span class="detail-value">$0.00 (0.00% of Fees)</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Fee-Adjusted Break-Even</span>
+          <span class="detail-value highlight">4.10% ROI</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Slippage Buffer</span>
+          <span class="detail-value">0.02% price buffer</span>
+        </div>
+      </div>
+      
+      <!-- Active Positions -->
+      <div class="positions-panel">
+        <div class="positions-header">
+          <div class="section-title" style="margin: 0; border: none; padding: 0;">
+            <span>🎯</span> Active Positions
+          </div>
+          <span class="positions-count">0</span>
+        </div>
+        <div class="no-positions">No active positions</div>
+      </div>
+      
+      <!-- Activity Log -->
+      <div class="activity-log">
+        <div class="log-header">
+          <div class="section-title" style="margin: 0; border: none; padding: 0;">
+            <span>📋</span> Activity Log
+          </div>
+          <button class="clear-btn">Clear</button>
+        </div>
+        
+        <div class="log-entry">
+          <span class="log-time">4:42:58 AM</span>
+          <span class="log-message">Loaded 5 symbols</span>
+        </div>
+        <div class="log-entry">
+          <span class="log-time">4:42:58 AM</span>
+          <span class="log-message">Dashboard connected (V5.0.0)</span>
+        </div>
+        <div class="log-entry">
+          <span class="log-time">4:42:58 AM</span>
+          <span class="log-message">Connected to V5.0 server</span>
+        </div>
+        <div class="log-entry">
+          <span class="log-time">4:42:58 AM</span>
+          <span class="log-message">Dashboard V5.0.0 initializing...</span>
+        </div>
+        <div class="log-entry">
+          <span class="log-time">4:42:57 AM</span>
+          <span class="log-message">Connecting to ws://localhost:3001...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    const API_BASE = window.location.origin;
+    
+    // Update signal display
+    function updateSignalDisplay(score, confidence) {
+      const scoreEl = document.getElementById('signal-score');
+      const labelEl = document.getElementById('signal-label');
+      const indicatorEl = document.getElementById('score-indicator');
+      const badgeEl = document.getElementById('confidence-badge');
+      
+      // Update score
+      scoreEl.textContent = score >= 0 ? `+${score}` : score;
+      
+      // Update colors and label
+      if (score >= 70) {
+        scoreEl.className = 'signal-score positive';
+        labelEl.className = 'signal-label bullish';
+        labelEl.textContent = 'STRONG BUY';
+      } else if (score >= 30) {
+        scoreEl.className = 'signal-score positive';
+        labelEl.className = 'signal-label bullish';
+        labelEl.textContent = 'BUY';
+      } else if (score <= -70) {
+        scoreEl.className = 'signal-score negative';
+        labelEl.className = 'signal-label bearish';
+        labelEl.textContent = 'STRONG SELL';
+      } else if (score <= -30) {
+        scoreEl.className = 'signal-score negative';
+        labelEl.className = 'signal-label bearish';
+        labelEl.textContent = 'SELL';
+      } else {
+        scoreEl.className = 'signal-score neutral';
+        labelEl.className = 'signal-label neutral';
+        labelEl.textContent = 'NEUTRAL';
+      }
+      
+      // Update slider position
+      const percentage = ((score + 120) / 240) * 100;
+      indicatorEl.style.left = `${percentage}%`;
+      
+      // Update confidence badge
+      if (confidence >= 70) {
+        badgeEl.className = 'confidence-badge high';
+        badgeEl.textContent = 'HIGH CONFIDENCE';
+      } else if (confidence >= 40) {
+        badgeEl.className = 'confidence-badge';
+        badgeEl.textContent = 'MEDIUM CONFIDENCE';
+      } else {
+        badgeEl.className = 'confidence-badge low';
+        badgeEl.textContent = 'LOW CONFIDENCE';
+      }
+    }
+    
+    // Leverage slider
+    const leverageSlider = document.getElementById('leverage-slider');
+    const leverageValue = document.getElementById('leverage-value');
+    
+    leverageSlider.addEventListener('input', (e) => {
+      leverageValue.textContent = `${e.target.value}x`;
+    });
+    
+    // Toggle buttons
+    document.getElementById('leverage-auto').addEventListener('click', function() {
+      this.classList.add('active');
+      document.getElementById('leverage-manual').classList.remove('active');
+      leverageSlider.disabled = true;
+      leverageSlider.value = 50;
+      leverageValue.textContent = '50x';
+    });
+    
+    document.getElementById('leverage-manual').addEventListener('click', function() {
+      this.classList.add('active');
+      document.getElementById('leverage-auto').classList.remove('active');
+      leverageSlider.disabled = false;
+    });
+    
+    // Fetch data from API
+    async function fetchData() {
+      try {
+        const [statusRes, signalsRes] = await Promise.all([
+          fetch(`${API_BASE}/api/status`),
+          fetch(`${API_BASE}/api/signals`)
+        ]);
+        
+        const status = await statusRes.json();
+        const signals = await signalsRes.json();
+        
+        if (signals.signals && signals.signals.length > 0) {
+          const latest = signals.signals[0];
+          updateSignalDisplay(latest.score, latest.confidence);
+        }
+      } catch (err) {
+        console.error('API Error:', err);
+      }
+    }
+    
+    // Initial load
+    fetchData();
+    
+    // Auto-refresh
+    setInterval(fetchData, 3000);
+    
+    // Demo: animate score
+    let demoScore = -5;
+    setInterval(() => {
+      demoScore += Math.random() * 10 - 5;
+      demoScore = Math.max(-120, Math.min(120, demoScore));
+      updateSignalDisplay(Math.round(demoScore), 35);
+    }, 5000);
+  </script>
+</body>
+</html>

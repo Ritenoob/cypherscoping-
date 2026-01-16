@@ -1,0 +1,141 @@
+{
+  "fetchedAt": "2026-01-16T20:39:12.965Z",
+  "config": {
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "intervals": [
+      "15m",
+      "1h",
+      "4h"
+    ],
+    "days": 30
+  },
+  "results": [
+    {
+      "symbol": "BTCUSDT",
+      "interval": "15m",
+      "candles": 2880,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/BTCUSDT_15m_30d.json",
+      "priceRange": {
+        "low": 84408.6,
+        "high": 97932.1
+      }
+    },
+    {
+      "symbol": "BTCUSDT",
+      "interval": "1h",
+      "candles": 720,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/BTCUSDT_1h_30d.json",
+      "priceRange": {
+        "low": 84408.6,
+        "high": 97932.1
+      }
+    },
+    {
+      "symbol": "BTCUSDT",
+      "interval": "4h",
+      "candles": 180,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/BTCUSDT_4h_30d.json",
+      "priceRange": {
+        "low": 84408.6,
+        "high": 97932.1
+      }
+    },
+    {
+      "symbol": "ETHUSDT",
+      "interval": "15m",
+      "candles": 2880,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/ETHUSDT_15m_30d.json",
+      "priceRange": {
+        "low": 2772.97,
+        "high": 3403.77
+      }
+    },
+    {
+      "symbol": "ETHUSDT",
+      "interval": "1h",
+      "candles": 720,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/ETHUSDT_1h_30d.json",
+      "priceRange": {
+        "low": 2772.97,
+        "high": 3403.77
+      }
+    },
+    {
+      "symbol": "ETHUSDT",
+      "interval": "4h",
+      "candles": 180,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/ETHUSDT_4h_30d.json",
+      "priceRange": {
+        "low": 2772.97,
+        "high": 3403.77
+      }
+    },
+    {
+      "symbol": "SOLUSDT",
+      "interval": "15m",
+      "candles": 2880,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/SOLUSDT_15m_30d.json",
+      "priceRange": {
+        "low": 116.71,
+        "high": 148.8
+      }
+    },
+    {
+      "symbol": "SOLUSDT",
+      "interval": "1h",
+      "candles": 720,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/SOLUSDT_1h_30d.json",
+      "priceRange": {
+        "low": 116.71,
+        "high": 148.8
+      }
+    },
+    {
+      "symbol": "SOLUSDT",
+      "interval": "4h",
+      "candles": 180,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/SOLUSDT_4h_30d.json",
+      "priceRange": {
+        "low": 116.71,
+        "high": 148.8
+      }
+    },
+    {
+      "symbol": "XRPUSDT",
+      "interval": "15m",
+      "candles": 2880,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/XRPUSDT_15m_30d.json",
+      "priceRange": {
+        "low": 1.7703,
+        "high": 2.4175
+      }
+    },
+    {
+      "symbol": "XRPUSDT",
+      "interval": "1h",
+      "candles": 720,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/XRPUSDT_1h_30d.json",
+      "priceRange": {
+        "low": 1.7703,
+        "high": 2.4175
+      }
+    },
+    {
+      "symbol": "XRPUSDT",
+      "interval": "4h",
+      "candles": 180,
+      "file": "/home/nygmaee/Downloads/V5.2/trading-bot/data/ohlcv/XRPUSDT_4h_30d.json",
+      "priceRange": {
+        "low": 1.7703,
+        "high": 2.4175
+      }
+    }
+  ],
+  "totalCandles": 15120,
+  "totalFiles": 12
+}

@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "safety": {
+    "require_review": ["src/core/**", "src/risk/**"],
+    "forbidden_operations": ["withdrawal", "transfer"],
+    "max_position_size_usd": 10000
+  },
+  "testing": {
+    "required_before_deploy": true
+  }
+}

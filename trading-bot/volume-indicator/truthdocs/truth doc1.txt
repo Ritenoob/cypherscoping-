@@ -1,0 +1,862 @@
+for sym in SYMBOLS:
+    sig = latest_signal_for_symbol(client, sym, rt["granularity"], lookback_bars=500, cfg=None)
+    print(f"{sym}: signal={sig['signal']} strength={sig['strength']}")
+Skip to content
+Chat history
+
+You said:
+read the prompt and and view all the files in this projest. I need you to write me a pure python script in python that I intnd to use to trade future perpetuals on Kucoin via api  
+ChatGPT said:
+
+Thought for 11m 20s
+ChatGPT said:
+Here is a single‑file, pure‑Python KuCoin Futures bot. It implements your AO+WR engine and scoring per the “MASTER STRATEGY PROMPT,” with an optional MACD/KDJ/CMF exit toggle derived from your Pine file.  
+Notes: Uses KuCoin Futures REST. Set env vars KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE, optionally KUCOIN_API_KEY_VERSION=3 and KUCOIN_BASE_URL (defaults to https://api-futures.kucoin.com). Auth headers, signing, and time tolerance follow KuCoin’s spec; server time endpoint and paths for klines, orders, cancel, and positions are implemented. 
+KuCoin
++5
+KuCoin
++5
+KuCoin
++5
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+KuCoin Futures bot: pure Python + pandas engine, REST-only I/O.
+
+Implements:
+- Indicator engine per MASTER STRATEGY PROMPT (AO, RSI, KDJ, WR, MA/EMA, BB, scoring).
+- Optional MACD/KDJ/CMF exit toggle (from your Pine file).
+- REST client for KuCoin Futures: klines, place/cancel orders, positions, server time sync.
+
+Environment:
+  KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE  # required for private endpoints
+  KUCOIN_API_KEY_VERSION=3                                   # default "3"
+  KUCOIN_BASE_URL=https://api-futures.kucoin.com            # override to testnet if applicable
+
+References:
+- Auth headers + signing: KC-API-KEY, KC-API-SIGN, KC-API-TIMESTAMP, KC-API-PASSPHRASE, KC-API-KEY-VERSION; prehash = timestamp + method + endpoint + body. Time must be within ±5s of server. (Official docs)  # see Authentication + Error Code pages
+- Futures server time: GET /api/v1/timestamp
+- Klines: GET /api/v1/kline/query?symbol=...&granularity=...&from=...&to=...
+- Place order: POST /api/v1/orders
+- Cancel order by id: DELETE /api/v1/orders/{orderId}
+- Positions: GET /api/v1/positions
+"""
+
+import os
+import time
+import uuid
+import hmac
+import json
+import base64
+import hashlib
+from typing import Optional, Dict, Any, Tuple
+
+import requests
+import pandas as pd
+import numpy as np
+
+
+# -----------------------------
+# KuCoin Futures REST client
+# -----------------------------
+class KuCoinFuturesREST:
+    def __init__(self,
+                 key: str,
+                 secret: str,
+                 passphrase: str,
+                 base_url: str = None,
+                 key_version: str = None,
+                 timeout: int = 10):
+        self.key = key
+        self.secret = secret
+        self.passphrase = passphrase
+        self.base_url = (base_url or os.getenv("KUCOIN_BASE_URL") or "https://api-futures.kucoin.com").rstrip("/")
+        self.key_version = key_version or os.getenv("KUCOIN_API_KEY_VERSION", "3")
+        self.timeout = timeout
+        self.time_offset_ms = 0
+        # initial sync with server time (futures)
+        try:
+            self.sync_time()  # GET /api/v1/timestamp
+        except Exception:
+            self.time_offset_ms = 0  # proceed; requests may still pass if local clock is close
+
+    # Futures server time (ms)
+    def sync_time(self) -> int:
+        url = f"{self.base_url}/api/v1/timestamp"  # Get Server Time
+        r = requests.get(url, timeout=self.timeout)
+        r.raise_for_status()
+        data = r.json()
+        srv_ms = int(data["data"])
+        self.time_offset_ms = srv_ms - int(time.time() * 1000)
+        return self.time_offset_ms
+
+    def _now_ms(self) -> int:
+        return int(time.time() * 1000 + self.time_offset_ms)
+
+    def _sign(self, ts_ms: int, method: str, path_with_query: str, body_str: str) -> Tuple[str, str]:
+        """
+        Prehash string = f"{ts}{method}{endpoint}{body}"
+        endpoint includes any unencoded query string (ASCII-safe params are fine).
+        KC-API-SIGN = base64(HMAC_SHA256(secret, prehash))
+        KC-API-PASSPHRASE = base64(HMAC_SHA256(secret, passphrase))
+        """
+        prehash = f"{ts_ms}{method.upper()}{path_with_query}{body_str}"
+        digest = hmac.new(self.secret.encode("utf-8"), prehash.encode("utf-8"), hashlib.sha256).digest()
+        sign = base64.b64encode(digest).decode()
+        passphrase_enc = base64.b64encode(
+            hmac.new(self.secret.encode("utf-8"), self.passphrase.encode("utf-8"), hashlib.sha256).digest()
+        ).decode()
+        return sign, passphrase_enc
+
+    def _request(self,
+                 method: str,
+                 path: str,
+                 params: Optional[Dict[str, Any]] = None,
+                 body: Optional[Dict[str, Any]] = None,
+                 auth: bool = False) -> Any:
+        assert path.startswith("/"), "path must start with '/'"
+        q = ""
+        if params:
+            # Build ASCII-safe query without URL encoding for signing
+            q = "?" + "&".join([f"{k}={params[k]}" for k in params])
+        url = f"{self.base_url}{path}{q}"
+        headers = {"Content-Type": "application/json"}
+        body_str = ""
+        if body is not None:
+            # No extra spaces in JSON per docs
+            body_str = json.dumps(body, separators=(",", ":"))
+
+        if auth:
+            ts = self._now_ms()
+            path_for_sign = f"{path}{q}"
+            sig, passphrase_enc = self._sign(ts, method, path_for_sign, body_str)
+            headers.update({
+                "KC-API-KEY": self.key,
+                "KC-API-SIGN": sig,
+                "KC-API-TIMESTAMP": str(ts),
+                "KC-API-PASSPHRASE": passphrase_enc,
+                "KC-API-KEY-VERSION": str(self.key_version),
+            })
+
+        resp = requests.request(method, url, data=body_str if body_str else None,
+                                headers=headers, timeout=self.timeout)
+        resp.raise_for_status()
+        js = resp.json()
+        if "code" in js and js["code"] != "200000":
+            raise RuntimeError(f"KuCoin error {js.get('code')}: {js}")
+        return js.get("data", js)
+
+    # --- Public
+    def get_klines(self, symbol: str, granularity: int, start_ms: Optional[int] = None, end_ms: Optional[int] = None):
+        params = {"symbol": symbol, "granularity": granularity}
+        if start_ms is not None:
+            params["from"] = start_ms
+        if end_ms is not None:
+            params["to"] = end_ms
+        return self._request("GET", "/api/v1/kline/query", params=params, auth=False)
+
+    # --- Private
+    def place_order(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        # POST /api/v1/orders
+        return self._request("POST", "/api/v1/orders", body=body, auth=True)
+
+    def cancel_order_by_id(self, order_id: str) -> Dict[str, Any]:
+        # DELETE /api/v1/orders/{orderId}
+        return self._request("DELETE", f"/api/v1/orders/{order_id}", auth=True)
+
+    def get_order_list(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        # GET /api/v1/orders
+        return self._request("GET", "/api/v1/orders", params=params or {}, auth=True)
+
+    def get_positions(self) -> Any:
+        # GET /api/v1/positions
+        return self._request("GET", "/api/v1/positions", auth=True)
+
+    def get_all_symbols(self) -> Any:
+        # GET /api/v1/contracts/active (for lotSize/multiplier etc.)
+        return self._request("GET", "/api/v1/contracts/active", auth=False)
+
+
+# -----------------------------
+# Indicator math (vectorized)
+# -----------------------------
+def rsi_wilder(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    up = delta.clip(lower=0.0)
+    down = -delta.clip(upper=0.0)
+    # Wilder's smoothing via EMA(alpha=1/period)
+    roll_up = up.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    roll_down = down.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    rs = roll_up / (roll_down + 1e-12)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+def stoch_kdj(high: pd.Series, low: pd.Series, close: pd.Series,
+              n: int = 9, k_n: int = 3, d_n: int = 3) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    ll = low.rolling(n, min_periods=n).min()
+    hh = high.rolling(n, min_periods=n).max()
+    rsv = ((close - ll) / (hh - ll + 1e-12)) * 100.0
+    k = rsv.rolling(k_n, min_periods=k_n).mean()
+    d = k.rolling(d_n, min_periods=d_n).mean()
+    j = 3 * k - 2 * d
+    return k, d, j
+
+
+def williams_r(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 19) -> pd.Series:
+    hh = high.rolling(n, min_periods=n).max()
+    ll = low.rolling(n, min_periods=n).min()
+    wr = 100.0 * (close - hh) / (hh - ll + 1e-12)
+    return wr  # range ~[-100, 0]
+
+
+def sma(series: pd.Series, n: int) -> pd.Series:
+    return series.rolling(n, min_periods=n).mean()
+
+
+def ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False, min_periods=span).mean()
+
+
+def bollinger(close: pd.Series, n: int = 20, k: float = 2.0):
+    mid = close.rolling(n, min_periods=n).mean()
+    std = close.rolling(n, min_periods=n).std()
+    upper = mid + k * std
+    lower = mid - k * std
+    width = (upper - lower) / (mid + 1e-12)
+    return mid, upper, lower, width
+
+
+def awesome_osc(high: pd.Series, low: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    median = (high + low) / 2.0
+    ao = sma(median, 5) - sma(median, 34)
+    dao = ao.diff()
+    dao7 = dao.rolling(7, min_periods=7).mean()
+    return ao, dao, dao7
+
+
+def cross_up(a: pd.Series, b: pd.Series) -> pd.Series:
+    return (a > b) & (a.shift(1) <= b.shift(1))
+
+
+def cross_dn(a: pd.Series, b: pd.Series) -> pd.Series:
+    return (a < b) & (a.shift(1) >= b.shift(1))
+
+
+def expand_within(b: pd.Series, bars: int = 2) -> pd.Series:
+    win = 2 * bars + 1
+    # Centered rolling max to emulate ±bars window
+    return b.astype("int").rolling(win, min_periods=1, center=True).max().astype(bool)
+
+
+def clamp01(x: pd.Series) -> pd.Series:
+    return x.clip(lower=0.0, upper=1.0)
+
+
+# -----------------------------
+# Strategy engine
+# -----------------------------
+DEFAULT_CONFIG = {
+    # periods
+    "rsi_period": 14,
+    "kdj_n": 9, "kdj_k": 3, "kdj_d": 3,
+    "wr_period": 19,
+    "ma_n": 5, "ema_span": 2,
+    "bb_n": 20, "bb_k": 2.0,
+
+    # thresholds
+    "wr_ob": -20.0, "wr_os": -80.0,
+    "volatility_min": 0.02,  # BB_width filter
+
+    # weights (sum ~ 100). Assign AO=25 to complete table.
+    "weights": {
+        "ao": 25,
+        "rsi": 15,
+        "kdj": 15,
+        "ma": 10,
+        "wr": 15,
+        "bb_align": 10,
+        "vol": 10,
+    },
+
+    # MACD/KDJ/CMF exit (optional toggle)
+    "use_macd_exit": True,
+}
+
+
+def compute_signals(df: pd.DataFrame, cfg: Dict[str, Any] = None) -> pd.DataFrame:
+    cfg = {**DEFAULT_CONFIG, **(cfg or {})}
+    close = df["close"].astype(float)
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+
+    # Indicators
+    ao, dao, dao7 = awesome_osc(high, low)
+    rsi = rsi_wilder(close, cfg["rsi_period"])
+    rsi_sma7 = rsi.rolling(7, min_periods=7).mean()
+    k, d, j = stoch_kdj(high, low, close, cfg["kdj_n"], cfg["kdj_k"], cfg["kdj_d"])
+    wr = williams_r(high, low, close, cfg["wr_period"])
+    ma5 = sma(close, cfg["ma_n"])
+    ema2 = ema(close, cfg["ema_span"])
+    bb_mid, bb_u, bb_l, bb_w = bollinger(close, cfg["bb_n"], cfg["bb_k"])
+
+    # AO states
+    ao_green = (ao >= ao.shift(1)) | ((dao > 0) & (dao7.diff() > 0))
+    ao_red = (ao <= ao.shift(1)) | ((dao < 0) & (dao7.diff() < 0))
+
+    # Crosses
+    rsi_xup = cross_up(rsi, rsi_sma7)
+    rsi_xdn = cross_dn(rsi, rsi_sma7)
+    kdj_xup = cross_up(k, d)
+    kdj_xdn = cross_dn(k, d)
+    ma_xup = cross_up(ma5, ema2)
+    ma_xdn = cross_dn(ma5, ema2)
+
+    # Williams transitions
+    wr_from_os = (wr.shift(1) <= cfg["wr_os"]) & (wr > wr.shift(1))
+    wr_from_ob = (wr.shift(1) >= cfg["wr_ob"]) & (wr < wr.shift(1))
+
+    # BB touches
+    touch_lower = (df["low"] <= bb_l)
+    touch_upper = (df["high"] >= bb_u)
+
+    # ±2 bar window expansion
+    def exp(b): return expand_within(b, 2)
+
+    long_confirms = (
+        exp(rsi_xup) +
+        exp(kdj_xup) +
+        exp(ma_xup) +
+        exp(wr_from_os) +
+        exp(touch_lower)
+    )
+    short_confirms = (
+        exp(rsi_xdn) +
+        exp(kdj_xdn) +
+        exp(ma_xdn) +
+        exp(wr_from_ob) +
+        exp(touch_upper)
+    )
+
+    vol_ok = bb_w > cfg["volatility_min"]
+
+    sig_buy = ao_green & (long_confirms >= 3) & vol_ok
+    sig_sell = ao_red & (short_confirms >= 3) & vol_ok
+
+    # Scoring (0-100)
+    w = cfg["weights"]
+    # AO score: min(abs(dao / (|dao7|+eps)), 2) * 50
+    ao_score = (np.minimum((dao.abs() / (dao7.abs() + 1e-9)), 2.0) * 50.0).fillna(0.0)
+    # RSI cross magnitude vs 7-SMA
+    rsi_score = clamp01((rsi - rsi_sma7).abs() / 10.0) * 100.0
+    # KDJ separation
+    kdj_score = clamp01((k - d).abs() / 20.0) * 100.0
+    # MA/EMA slope magnitude normalized by price
+    ma_slope = (ma5 - ema2).diff().abs() / (close.abs() + 1e-12)
+    ma_score = clamp01(ma_slope * 1000.0) * 100.0
+    # WR distance from -50
+    wr_score = clamp01((wr + 50.0).abs() / 50.0) * 100.0
+    # BB touch alignment (directional)
+    bb_align_score = pd.Series(0.0, index=df.index)
+    bb_align_score = np.where(touch_lower, 100.0, bb_align_score)
+    bb_align_score = np.where(touch_upper, 100.0, bb_align_score)
+    bb_align_score = pd.Series(bb_align_score, index=df.index)
+    # Volatility factor (scaled above threshold)
+    vol_factor = clamp01((bb_w - cfg["volatility_min"]) / max(0.06, cfg["volatility_min"]))
+    vol_score = vol_factor * 100.0
+
+    # Weighted sum
+    strength = (
+        w["ao"] * ao_score +
+        w["rsi"] * rsi_score +
+        w["kdj"] * kdj_score +
+        w["ma"] * ma_score +
+        w["wr"] * wr_score +
+        w["bb_align"] * bb_align_score +
+        w["vol"] * vol_score
+    ) / 100.0
+    strength = strength.clip(0, 100).round(0).astype("Int64")
+
+    # Optional MACD/KDJ/CMF exit pressure (simple boolean gate)
+    if cfg.get("use_macd_exit", True):
+        # Minimal MACD/KDJ/CMF proxy without extra libs
+        ema_fast = ema(close, 10)
+        ema_slow = ema(close, 25)
+        macd_line = ema_fast - ema_slow
+        macd_sig = ema(macd_line, 6)
+        delta = macd_line - macd_sig
+        macd_slope_neg = delta.diff() < 0
+
+        # CMF proxy (20)
+        mf_mult = ((close - low) - (high - close)) / (high - low + 1e-12)
+        mf_vol = mf_mult * df["volume"].astype(float)
+        cmf = sma(mf_vol, 20) / (sma(df["volume"].astype(float), 20) + 1e-12)
+
+        # KDJ J extremes
+        j_ext = (j > 80) | (j < 20)
+
+        exit_pressure = (macd_slope_neg & (cmf < 0) & j_ext)
+    else:
+        exit_pressure = pd.Series(False, index=df.index)
+
+    # Final signal label
+    signal = pd.Series(None, index=df.index, dtype=object)
+    signal = np.where(sig_buy & ~exit_pressure, "BUY", signal)
+    signal = np.where(sig_sell & ~exit_pressure, "SELL", signal)
+    signal = pd.Series(signal, index=df.index)
+
+    # Assemble output columns
+    out = df.copy()
+    out["AO"] = ao
+    out["dAO"] = dao
+    out["dAO7"] = dao7
+    out["AO_state"] = np.where(ao_green, "green", np.where(ao_red, "red", None))
+    out["rsi"] = rsi
+    out["kdj_k"] = k
+    out["kdj_d"] = d
+    out["kdj_j"] = j
+    out["wr"] = wr
+    out["wr_score"] = wr_score
+    out["bb_width"] = bb_w
+    out["signal"] = signal
+    out["strength"] = strength
+    return out
+
+
+# -----------------------------
+# Data helpers
+# -----------------------------
+def klines_to_df(rows: Any) -> pd.DataFrame:
+    """
+    KuCoin Futures klines return:
+    [ startTimeMs, open, high, low, close, volumeLots, volume ]
+    """
+    cols = ["timestamp", "open", "high", "low", "close", "volume_lots", "volume"]
+    arr = []
+    for r in rows:
+        if len(r) >= 7:
+            arr.append([int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5]), float(r[6])])
+        else:
+            # Fallback if only 6 fields present
+            arr.append([int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5]), float(r[5])])
+    df = pd.DataFrame(arr, columns=cols).sort_values("timestamp").reset_index(drop=True)
+    return df
+
+
+# -----------------------------
+# Trading loop primitives
+# -----------------------------
+def latest_signal_for_symbol(client: KuCoinFuturesREST,
+                             symbol: str,
+                             granularity: int,
+                             lookback_bars: int = 500,
+                             cfg: Dict[str, Any] = None) -> Dict[str, Any]:
+    ms_per_bar = granularity * 60 * 1000
+    end_ms = int(time.time() * 1000) + client.time_offset_ms
+    start_ms = end_ms - (lookback_bars * ms_per_bar)
+    rows = client.get_klines(symbol, granularity, start_ms, end_ms)
+    df = klines_to_df(rows)
+    out = compute_signals(df, cfg)
+    last = out.iloc[-1]
+    result = {
+        "timestamp": int(last["timestamp"]),
+        "signal": last["signal"] if isinstance(last["signal"], str) else None,
+        "strength": int(last["strength"]) if pd.notna(last["strength"]) else 0,
+        "volatility": float(last["bb_width"]) if pd.notna(last["bb_width"]) else 0.0,
+        "AO": float(last["AO"]) if pd.notna(last["AO"]) else 0.0,
+        "dAO": float(last["dAO"]) if pd.notna(last["dAO"]) else 0.0,
+        "dAO7": float(last["dAO7"]) if pd.notna(last["dAO7"]) else 0.0,
+        "AO_state": last["AO_state"] if isinstance(last["AO_state"], str) else None,
+        "wr": float(last["wr"]) if pd.notna(last["wr"]) else 0.0
+    }
+    return result
+
+
+def find_position_qty(positions: Any, symbol: str) -> int:
+    # positions = list of dicts; field currentQty is integer lots (positive long, negative short)
+    for p in positions or []:
+        if p.get("symbol") == symbol:
+            return int(p.get("currentQty", 0))
+    return 0
+
+
+def close_position(client: KuCoinFuturesREST, symbol: str, remark: str = "auto_close") -> Optional[str]:
+    # Use closeOrder=true to flatten regardless of side; size optional
+    body = {
+        "clientOid": uuid.uuid4().hex,
+        "symbol": symbol,
+        "side": "sell",     # side is ignored when closeOrder=true
+        "type": "market",
+        "closeOrder": True,
+        "reduceOnly": True,
+        "remark": remark
+    }
+    try:
+        data = client.place_order(body)
+        return data.get("orderId")
+    except Exception as e:
+        print(f"[close_position] error: {e}")
+        return None
+
+
+def market_open_value(client: KuCoinFuturesREST,
+                      symbol: str,
+                      side: str,
+                      value_usd: float,
+                      leverage: int = 3,
+                      margin_mode: str = "ISOLATED",
+                      position_side: str = "BOTH",
+                      remark: str = "engine_entry") -> Optional[str]:
+    """
+    For USDT/USDC-margined contracts, use valueQty in USD terms.
+    If your contract requires lots, switch to 'size'.
+    """
+    body = {
+        "clientOid": uuid.uuid4().hex,
+        "symbol": symbol,
+        "side": side,               # "buy" or "sell"
+        "type": "market",
+        "marginMode": margin_mode,  # ISOLATED or CROSS
+        "leverage": leverage,
+        "positionSide": position_side,
+        "valueQty": f"{value_usd:.2f}",  # USDS-Swap: value in USDT/USDC
+        "reduceOnly": False,
+        "remark": remark,
+    }
+    try:
+        data = client.place_order(body)
+        return data.get("orderId")
+    except Exception as e:
+        print(f"[market_open_value] error: {e}")
+        return None
+
+
+# -----------------------------
+# Runnable example
+# -----------------------------
+DEFAULT_RUNTIME = {
+    "symbol": "XBTUSDTM",      # KuCoin Futures symbol
+    "granularity": 1,          # minutes; allowed: 1 5 15 30 60 120 240 480 720 1440 10080
+    "order_value_usd": 20.0,   # not financial advice
+    "leverage": 3,
+    "margin_mode": "ISOLATED", # or "CROSS"
+    "position_side": "BOTH",   # in one-way mode
+}
+
+
+def main(run_live: bool = False, loop_sleep_sec: Optional[int] = None):
+    key = os.getenv("KUCOIN_API_KEY")
+    sec = os.getenv("KUCOIN_API_SECRET")
+    pw = os.getenv("KUCOIN_API_PASSPHRASE")
+    if not key or not sec or not pw:
+        print("Set KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE.")
+        return
+
+    client = KuCoinFuturesREST(key, sec, pw)
+    rt = DEFAULT_RUNTIME.copy()
+
+    def once():
+        sig = latest_signal_for_symbol(client, rt["symbol"], rt["granularity"], lookback_bars=500, cfg=None)
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {rt['symbol']} "
+              f"sig={sig['signal']} strength={sig['strength']} vol={sig['volatility']:.4f} AO={sig['AO']:.6f}")
+        try:
+            positions = client.get_positions()
+        except Exception as e:
+            print(f"[positions] error: {e}")
+            positions = []
+
+        qty = find_position_qty(positions, rt["symbol"])
+
+        # Flatten if optional exit pressure signaled via engine (handled inside latest_signal_for_symbol)
+        # Basic entry/exit logic:
+        if sig["signal"] == "BUY":
+            if qty < 0:
+                close_position(client, rt["symbol"], "flip_to_long")
+            if qty <= 0:
+                oid = market_open_value(client, rt["symbol"], "buy", rt["order_value_usd"],
+                                        leverage=rt["leverage"], margin_mode=rt["margin_mode"],
+                                        position_side=rt["position_side"], remark="engine_buy")
+                print(f"BUY orderId={oid}")
+        elif sig["signal"] == "SELL":
+            if qty > 0:
+                close_position(client, rt["symbol"], "flip_to_short")
+            if qty >= 0:
+                oid = market_open_value(client, rt["symbol"], "sell", rt["order_value_usd"],
+                                        leverage=rt["leverage"], margin_mode=rt["margin_mode"],
+                                        position_side=rt["position_side"], remark="engine_sell")
+                print(f"SELL orderId={oid}")
+        else:
+            # No new action
+            pass
+
+    if not run_live:
+        once()
+        return
+
+    # Live loop
+    sleep_s = loop_sleep_sec or max(5, DEFAULT_RUNTIME["granularity"] * 60 // 2)
+    while True:
+        try:
+            once()
+        except Exception as e:
+            print(f"[loop] {e}")
+        time.sleep(sleep_s)
+
+
+if __name__ == "__main__":
+    # Set run_live=True to loop. Default runs once for safety.
+    main(run_live=False)
+Minimal implementation details you may need:
+Auth, signing, headers, and body rules are per KuCoin docs. Time must be within 5 seconds of server. 
+KuCoin
++1
+Server time: GET /api/v1/timestamp (Futures). 
+KuCoin
+Klines endpoint and parameters: GET /api/v1/kline/query with symbol, granularity, and from/to in ms. 
+KuCoin
+Place order: POST /api/v1/orders (supports market, valueQty for USDT/USDC‑margined contracts, closeOrder for flatten). 
+KuCoin
+Cancel by id: DELETE /api/v1/orders/{orderId}. 
+KuCoin
+Positions: GET /api/v1/positions (read currentQty to infer long/short/flat). 
+KuCoin
+Contract metadata such as lotSize and multiplier is available via GET /api/v1/contracts/active if you need to switch from valueQty to size for coin‑margined contracts. 
+KuCoin
+If you want me to wire specific risk rules, hedge mode, or convert to size lots for coin‑margined symbols, say the symbol and order sizing convention.
+You said:
+how many coins can the bot monitor at once>>
+ChatGPT said:
+
+Thought for 5m 24s
+ChatGPT said:
+One by default. If you loop a symbol list, effectively hundreds. The cap is the REST rate limit, not the code. Rule of thumb using the docs:
+Klines call weight = 3 in the Public pool. 
+KuCoin
+Public pool quota at VIP0 = 2000 weight per 30 s. Futures private pool is also 2000/30 s. Quotas reset every 30 s. 
+KuCoin
+Capacity formula:
+max_symbols ≈ floor( pool_quota_per_30s / (endpoint_weight × polls_per_30s) )
+Examples:
+Poll each symbol once per minute ⇒ polls_per_30s = 0.5 ⇒ floor(2000 / (3 × 0.5)) = 1,333 symbols. 
+KuCoin
++1
+Poll every 15 s ⇒ polls_per_30s = 2 ⇒ floor(2000 / (3 × 2)) = 333 symbols. 
+KuCoin
++1
+Orders and position reads use the Futures (private) pool; check each endpoint’s weight when sizing bursts. 
+KuCoin
+You said:
+we meed to check every 5-15 seconds or less. how can we achieve this ?
+ChatGPT said:
+
+Thought for 5m 13s
+ChatGPT said:
+Use WebSockets. Subscribe to Futures klines and compute on the live 1‑min candle; push is every ~1 s, so a 5–15 s decision cadence is trivial. Get a Futures WS token via POST /api/v1/bullet-public, connect to the returned wss://ws-api-futures.kucoin.com/... endpoint, ping every pingInterval (~18 s), and subscribe to /contractMarket/limitCandle:{symbol}_1min for all symbols you watch. 
+KuCoin
++1
+ Key limits to respect:
+Uplink messages: 100 per 10 s. Batch‑subscribe up to 100 topics per message. Per‑connection cap is 400 topics, with no such cap on Futures per docs; shard if needed. 
+KuCoin
+REST fallback is safe but costly: Get Klines weight=3 and Futures Public pool at VIP0 is 2000/30 s, so max symbols ≈ ⌊2000/(3×polls_per_30s)⌋. Example: 5 s polling ⇒ 6 polls/30 s ⇒ ~111 symbols; 10 s ⇒ ~222; 15 s ⇒ ~333. 
+KuCoin
++1
+Implementation sketch (drop‑in next to your bot):
+Token + Connect
+POST https://api-futures.kucoin.com/api/v1/bullet-public → {token, instanceServers[0].endpoint, pingInterval}.
+Connect: wss_endpoint?token=...&connectId=.... Send JSON ping {"id":ts,"type":"ping"} every pingInterval. 
+KuCoin
+Subscribe
+Send: {"type":"subscribe","topic":"/contractMarket/limitCandle:XBTUSDTM_1min,ETHUSDTM_1min","response":true}. Push frequency: ~1 s. 
+KuCoin
+Build candles in memory
+Parse data.candles = [start, open, close, high, low, vol, amount]. Note: KuCoin flags this volume as incorrect; do not use it for CMF. Backfill the just‑closed bar’s volume via REST Get Klines or accumulate from the Trade stream. 
+KuCoin
+Recompute signals
+On each update or every N=5–15 s, update the in‑progress 1‑min bar and run your indicator engine; only act on bar‑close if you want “on‑close” discipline.
+If you insist on REST polling for a few symbols, set the bot’s loop to 5–15 s; for many symbols switch to WS as above. KuCoin themselves recommend WS for high‑frequency data. 
+KuCoin
+You said:
+can you give me the results from 10 coins to 100 and the ms check rate
+ChatGPT said:
+
+Thought for 32s
+Minimum safe REST polling interval at VIP0 (Futures pool 2000/30s, Klines weight=3). Formula: T_min ≈ 0.045 × symbols seconds = 45 × symbols ms. 
+KuCoin
++1
+
+Coins	Min interval (s)	Min interval (ms)
+10	0.45	450
+20	0.90	900
+30	1.35	1,350
+40	1.80	1,800
+50	2.25	2,250
+60	2.70	2,700
+70	3.15	3,150
+80	3.60	3,600
+90	4.05	4,050
+100	4.50	4,500
+Implications:
+
+Your 5–15 s target is feasible up to ~333 coins at 15 s and ~111 coins at 5 s using REST. 
+KuCoin
++1
+
+For checks faster than ~4.5 s at 100 coins, use WebSockets klines; push arrives ~1 s and WS uplink is 100 msgs/10 s with large topic caps. 
+KuCoin
+
+Branched from KuCoin Futures bot
+
+You said:
+0k lets start with between 1-15 coins.. where do i  input them so I can change them?  
+ChatGPT said:
+In your bot script, symbols are defined in a list or config variable near the top. Add or remove symbols there.
+
+In the provided code, look for:
+
+DEFAULT_RUNTIME = {
+    "symbol": "XBTUSDTM",  # KuCoin Futures symbol
+    "granularity": 1,
+    ...
+}
+That version handles one symbol.
+To monitor multiple coins, replace that single "symbol" with a list:
+
+SYMBOLS = [
+    "XBTUSDTM", "ETHUSDTM", "BNBUSDTM", "ADAUSDTM",
+    "SOLUSDTM", "XRPUSDTM", "DOGEUSDTM", "AVAXUSDTM",
+    "LINKUSDTM", "LTCUSDTM", "NEARUSDTM", "MATICUSDTM",
+    "ATOMUSDTM", "OPUSDTM", "DOTUSDTM"
+]
+Then in the main loop, change:
+
+sig = latest_signal_for_symbol(client, rt["symbol"], rt["granularity"], ...)
+to iterate:
+
+for sym in SYMBOLS:
+    sig = latest_signal_for_symbol(client, sym, rt["granularity"], lookback_bars=500, cfg=None)
+    print(f"{sym}: signal={sig['signal']} strength={sig['strength']}")
+You can now control how many coins to monitor by editing the SYMBOLS list—add, remove, or comment out entries.
+Everything else (fetching, calculating, and trading) runs automatically for each symbol in that list.
+
+You said:
+need file tree and linux mkdir cmd
+ChatGPT said:
+Recommended file tree for your KuCoin Futures bot:
+
+kucoin-futures-bot/
+├── main.py                # core trading script
+├── config.py              # API keys, settings
+├── indicators.py          # RSI, KDJ, AO, WR, etc.
+├── strategy.py            # signal scoring logic
+├── utils.py               # shared helpers (logging, time sync)
+├── logs/                  # run-time logs
+├── data/                  # cached OHLCV or backtest data
+└── .env                   # local environment vars
+To create it in Linux:
+
+mkdir -p ~/kucoin-futures-bot/{logs,data}
+cd ~/kucoin-futures-bot
+touch main.py config.py indicators.py strategy.py utils.py .env
+You’ll then edit main.py for execution logic, and store your symbol list in config.py (e.g., SYMBOLS = [...]).
+
+You said:
+no single filwe script 
+ChatGPT said:
+Then keep everything in one file, for example kucoin_futures_bot.py.
+
+Linux commands:
+
+mkdir -p ~/kucoin-futures-bot
+cd ~/kucoin-futures-bot
+touch kucoin_futures_bot.py
+File tree:
+
+kucoin-futures-bot/
+└── kucoin_futures_bot.py
+Inside kucoin_futures_bot.py, place all code (REST client, indicators, strategy, runtime).
+Add this near the top so you can edit your coin list easily:
+
+# --- User config ---
+SYMBOLS = [
+    "XBTUSDTM", "ETHUSDTM", "BNBUSDTM", "ADAUSDTM",
+    "SOLUSDTM", "XRPUSDTM", "DOGEUSDTM"
+]  # edit this list to monitor 1–15 coins
+CHECK_INTERVAL = 5  # seconds between checks
+Run with:
+
+python3 kucoin_futures_bot.py
+To change the monitored coins, just edit the SYMBOLS list and save.
+
+Strategies to Prevent Liquidation and Repair Underwater Futures Positions
+
+This report summarises multiple high-probability strategies for managing crypto futures positions that are close to liquidation or in significant drawdown. Each strategy is based on risk-management practices covered in educational articles, such as those from Mudrex and HashKey, and includes guidance on leverage, margin, hedging, stops, diversification, position sizing and market awareness.
+
+Summary Table
+
+The table below highlights the key strategies, their objectives and actions, along with an opportunity‑cost ranking (1 = low cost; higher values indicate larger capital commitment or effort).
+
+Strategy	Objective	Key Actions	Opportunity Cost
+Use Lower Leverage	Reduce liquidation risk by providing more buffer	Select leverage 2x–5x	1
+Set Stop-Loss Orders	Limit losses and avoid liquidation	Place stops below support	2
+Maintain Healthy Margin Ratio	Add margin to widen liquidation price	Inject collateral periodically	4
+Diversify Positions	Spread risk across assets	Trade multiple uncorrelated futures	3
+Hedge with Opposite Futures	Offset losses during downturns	Open small short vs long position	5
+Dynamic Margin Adjustment	Top up margin when volatility rises	Transfer funds to open positions	6
+Use Trailing Stops	Lock in gains as price moves	Trailing stop orders follow price	2
+Practice Position Sizing	Limit exposure per trade	Risk 1–2% of account per position	1
+Understand Funding Rates	Avoid high funding costs eroding margin	Monitor funding before trading	3
+Stay Informed & Educated	Anticipate volatility and adjust strategies	Track news & events	1
+Averaging Down Carefully	Lower cost basis on deep drawdowns	Add small size at key supports	7
+Partial Liquidation / Reduce Size	Free up margin, cut losses early	Sell portion of underwater position	2
+1. Use Lower Leverage
+
+High leverage magnifies both gains and losses. According to a Mudrex guide, even professional traders rarely use more than 5× leverage; a 5× leverage position needs a 20% adverse move to hit liquidation, whereas 20× leverage needs only a 5% move. Reducing leverage widens the buffer between entry and liquidation and prevents small price movements from wiping out your margin.
+
+2. Set Stop‑Loss Orders
+
+Stop‑loss orders act as an emergency brake to close trades if the market moves beyond a predefined level. The HashKey Global guide notes that stop‑losses help ensure losses are capped early and keep your position from reaching liquidation. When setting stops, choose levels based on technical support rather than arbitrary numbers to avoid being triggered by normal volatility.
+
+3. Maintain a Healthy Margin Ratio
+
+Liquidation occurs when the equity in your account falls below the maintenance margin. Keeping a high margin ratio provides more cushion against volatility. HashKey suggests monitoring your margin levels frequently and adding collateral when needed. Transfers of funds into open positions can move the liquidation price farther away.
+
+4. Diversify Positions
+
+Putting all capital into a single futures position concentrates risk. Mudrex encourages spreading positions across two or more uncorrelated assets. Diversification does not eliminate risk but reduces the chance of a total wipeout. HashKey also emphasises allocating only a small portion of capital to any single perpetual futures position.
+
+5. Hedge with Opposite Futures
+
+Hedging involves opening a smaller position in the opposite direction to cushion losses. Mudrex notes that advanced traders may protect a long position with a partial short or use options for downside insurance. This strategy is analogous to a short hedge in commodities, where selling futures contracts offsets losses on the underlying asset. Hedging limits upside potential but prevents catastrophic losses.
+
+6. Dynamic Margin Adjustment
+
+Adding collateral to open positions can prevent liquidation during volatile periods. Mudrex recommends adding funds when the liquidation price is creeping closer, noting that extra margin significantly lowers liquidation risk. This tactic is especially useful for overnight trades when markets can move while you are not actively monitoring them.
+
+7. Use Trailing Stops
+
+Trailing stops move automatically as the market advances, locking in profits while still limiting downside. Mudrex explains that trailing stops adjust with price increases and close positions if the market reverses. Trailing stops work well in volatile markets by preserving gains without continuous manual intervention.
+
+8. Practice Position Sizing
+
+Risking too much on a single trade can lead to quick liquidation. A simple guideline is to risk only 1–2 % of your account per trade. Proper position sizing ensures that even a series of losing trades will not wipe out your capital.
+
+9. Understand Funding Rates
+
+Perpetual futures exchanges charge periodic funding payments between longs and shorts. Holding positions during periods of high funding rates can erode your margin and increase liquidation risk. HashKey advises checking historical funding rates and avoiding positions when funding costs are extreme.
+
+10. Stay Informed and Educated
+
+Market news, macroeconomic announcements and technical indicators can all trigger volatility. HashKey recommends keeping up with events such as Federal Reserve announcements or regulatory news that may cause large price swings. Continuous learning and analysis of past liquidation events help traders anticipate risk and maintain discipline.
+
+11. Averaging Down Carefully
+
+Averaging down means buying additional units of an asset as the price declines. This can lower the average entry price, as illustrated by an example where purchasing more shares at a lower price reduced the average cost basis. However, the practice increases exposure and risk if prices continue falling; financial professionals are divided on its viability. Use this strategy sparingly and only when you have conviction in a potential rebound.
+
+12. Partial Liquidation / Reduce Size
+
+Reducing or closing part of an underwater position frees up margin and mitigates risk. Instead of adding to a losing trade, consider selling a portion and reallocating capital to other opportunities. Cutting losses early can prevent a larger drawdown and allows you to redeploy funds in trades with better prospects.
+
+In summary, the report shows that the safest steps involve lowering leverage, using stop‑losses, maintaining a healthy margin ratio, diversifying across assets, and practicing strict position sizing—each helps widen your liquidation buffer and reduce the chance of catastrophic loss. More advanced methods like hedging with opposite futures or dynamically adding collateral can further mitigate risk but may cap potential gains or tie up capital. The report also warns that averaging down should be used sparingly because, while it lowers the average entry price, it increases exposure if the price keeps falling.
+
+Feel free to review the report and let me know if you need the strategies adapted into automation templates or if you want to discuss any technique in more detail.

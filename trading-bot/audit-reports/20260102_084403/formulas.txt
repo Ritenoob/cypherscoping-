@@ -1,0 +1,16 @@
+# Trading Formulas & Calculations
+
+## Position Sizing Formulas
+
+## Leverage Calculations
+
+## Risk Calculations
+
+## Stop Loss Calculations
+
+## Break-even Calculations
+
+## Price/Math Type Usage
+Checking for Decimal usage (safe) vs native number (unsafe):
+Decimal operations found:  0
+Unsafe float operations found:  0

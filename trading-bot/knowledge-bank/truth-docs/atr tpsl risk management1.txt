@@ -1,0 +1,599 @@
+kucoin-bot/
+├─ engine_signals.py        # pure pandas signal engine + backtest + CSV logging
+├─ futures_bot.py           # KuCoin Futures REST execution loop + risk controls
+├─ config.yaml              # tunable periods, weights, thresholds, runtime
+├─ .env.example             # KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE
+├─ data/
+│  └─ sample_ohlcv.csv      # example backtest input (timestamp,open,high,low,close,volume)
+└─ logs/
+   └─ signals.csv           # written by engine/backtests and live loop
+ 
+ engine_signals.py
+ 
+#!/usr/bin/env python3
+# Pure pandas signal engine per MASTER STRATEGY PROMPT. Backtest + CSV logging.
+# Inputs: CSV with columns timestamp,open,high,low,close,volume (ascending).
+# Output: signals.csv with timestamp, side, strength, AO, WR, volatility.
+import argparse, sys, json, math
+from typing import Dict, Any, Tuple
+import pandas as pd
+import numpy as np
+import yaml
+
+# ---------------------- Config ----------------------
+DEFAULT = {
+  "periods": {"rsi":14, "kdj_n":9, "kdj_k":3, "kdj_d":3, "wr":19, "ma":5, "ema":2, "bb_n":20},
+  "bb_k": 2.0,
+  "wr_levels": {"ob": -20.0, "os": -80.0},
+  "volatility_min": 0.02,
+  "weights": {"ao":25,"rsi":15,"kdj":15,"ma":10,"wr":15,"bb_align":10,"vol":10},
+  "use_macd_exit": True
+}
+
+def load_cfg(path: str|None) -> Dict[str,Any]:
+    if not path: return DEFAULT
+    with open(path, "r") as f:
+        user = yaml.safe_load(f) or {}
+    # shallow merge
+    cfg = DEFAULT | {k:(user.get(k, DEFAULT[k])) for k in DEFAULT}
+    # merge nested
+    for k in ("periods","wr_levels","weights"):
+        cfg[k] = DEFAULT[k] | user.get(k, {})
+    return cfg
+
+# ---------------------- Math helpers ----------------------
+def sma(s,n): return s.rolling(n, min_periods=n).mean()
+def ema(s,span): return s.ewm(span=span, adjust=False, min_periods=span).mean()
+def rsi_wilder(c, period=14):
+    d = c.diff(); up = d.clip(lower=0.0); dn = -d.clip(upper=0.0)
+    ru = up.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    rd = dn.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    rs = ru / (rd + 1e-12); return 100 - (100/(1+rs))
+def kdj(high, low, close, n=9, k_n=3, d_n=3):
+    ll = low.rolling(n, min_periods=n).min(); hh = high.rolling(n, min_periods=n).max()
+    rsv = ((close - ll)/(hh-ll+1e-12))*100.0
+    k = rsv.rolling(k_n, min_periods=k_n).mean()
+    d = k.rolling(d_n, min_periods=d_n).mean()
+    j = 3*k - 2*d
+    return k,d,j
+def williams_r(high, low, close, n=19):
+    hh = high.rolling(n, min_periods=n).max(); ll = low.rolling(n, min_periods=n).min()
+    return 100.0*(close - hh)/(hh-ll+1e-12)  # [-100,0]
+def bollinger(close, n=20, k=2.0):
+    mid = close.rolling(n, min_periods=n).mean()
+    std = close.rolling(n, min_periods=n).std()
+    up = mid + k*std; lo = mid - k*std
+    width = (up - lo)/(mid + 1e-12)
+    return mid, up, lo, width
+def awesome_osc(high, low):
+    med = (high+low)/2.0
+    ao = sma(med,5) - sma(med,34)
+    dao = ao.diff()
+    dao7 = dao.rolling(7, min_periods=7).mean()
+    return ao, dao, dao7
+def cross_up(a,b): return (a>b) & (a.shift(1)<=b.shift(1))
+def cross_dn(a,b): return (a<b) & (a.shift(1)>=b.shift(1))
+def expand_win(b, bars=2): return b.astype(int).rolling(2*bars+1, center=True, min_periods=1).max().astype(bool)
+def clamp01(x): return x.clip(0.0,1.0)
+
+# ---------------------- Engine ----------------------
+def compute_signals(df: pd.DataFrame, cfg: Dict[str,Any]) -> pd.DataFrame:
+    p = cfg["periods"]; wrL = cfg["wr_levels"]
+    close = df["close"].astype(float); high = df["high"].astype(float); low = df["low"].astype(float)
+
+    # Indicators
+    ao, dao, dao7 = awesome_osc(high, low)
+    rsi = rsi_wilder(close, p["rsi"]); rsi_sma7 = rsi.rolling(7, min_periods=7).mean()
+    k,d,j = kdj(high, low, close, p["kdj_n"], p["kdj_k"], p["kdj_d"])
+    wr = williams_r(high, low, close, p["wr"])
+    ma5 = sma(close, p["ma"]); ema2 = ema(close, p["ema"])
+    bb_mid, bb_u, bb_l, bb_w = bollinger(close, p["bb_n"], cfg["bb_k"])
+
+    # AO regime
+    ao_green = (ao >= ao.shift(1)) | ((dao>0) & (dao7.diff()>0))
+    ao_red   = (ao <= ao.shift(1)) | ((dao<0) & (dao7.diff()<0))
+
+    # Cross triggers
+    rsi_xup, rsi_xdn = cross_up(rsi, rsi_sma7), cross_dn(rsi, rsi_sma7)
+    kdj_xup, kdj_xdn = cross_up(k,d), cross_dn(k,d)
+    ma_xup,  ma_xdn  = cross_up(ma5,ema2), cross_dn(ma5,ema2)
+
+    # WR transitions
+    wr_from_os = (wr.shift(1) <= wrL["os"]) & (wr > wr.shift(1))
+    wr_from_ob = (wr.shift(1) >= wrL["ob"]) & (wr < wr.shift(1))
+
+    # BB interactions
+    touch_lo = (df["low"] <= bb_l); touch_up = (df["high"] >= bb_u)
+    vol_ok = bb_w > cfg["volatility_min"]
+
+    # ±2 bars window counts
+    def ex(b): return expand_win(b, 2)
+    long_conf  = ex(rsi_xup) + ex(kdj_xup) + ex(ma_xup) + ex(wr_from_os) + ex(touch_lo)
+    short_conf = ex(rsi_xdn) + ex(kdj_xdn) + ex(ma_xdn) + ex(wr_from_ob) + ex(touch_up)
+
+    sig_buy  = ao_green & (long_conf>=3)  & vol_ok
+    sig_sell = ao_red   & (short_conf>=3) & vol_ok
+
+    # Scores
+    w = cfg["weights"]
+    ao_score  = (np.minimum(dao.abs()/(dao7.abs()+1e-9), 2.0)*50.0).fillna(0.0)
+    rsi_score = clamp01((rsi - rsi_sma7).abs()/10.0)*100.0
+    kdj_score = clamp01((k - d).abs()/20.0)*100.0
+    ma_slope  = (ma5 - ema2).diff().abs()/(close.abs()+1e-12)
+    ma_score  = clamp01(ma_slope*1000.0)*100.0
+    wr_score  = clamp01((wr+50.0).abs()/50.0)*100.0
+    bb_align  = pd.Series(0.0, index=df.index)
+    bb_align  = pd.Series(np.where(touch_lo|touch_up, 100.0, bb_align), index=df.index)
+    vol_score = clamp01((bb_w - cfg["volatility_min"])/max(0.06, cfg["volatility_min"])) * 100.0
+
+    strength = (
+      w["ao"]*ao_score + w["rsi"]*rsi_score + w["kdj"]*kdj_score +
+      w["ma"]*ma_score + w["wr"]*wr_score + w["bb_align"]*bb_align +
+      w["vol"]*vol_score
+    )/100.0
+    strength = strength.clip(0,100).round(0).astype("Int64")
+
+    # Optional MACD/KDJ/CMF fade exit (gate)
+    if cfg.get("use_macd_exit", True):
+        ema_fast, ema_slow = ema(close,10), ema(close,25)
+        macd_line = ema_fast - ema_slow; macd_sig = ema(macd_line,6)
+        delta = macd_line - macd_sig; macd_neg = delta.diff() < 0
+        mf_mult = ((close-low) - (high-close))/(high-low+1e-12)
+        mf_vol = mf_mult * df["volume"].astype(float)
+        cmf = sma(mf_vol, 20)/(sma(df["volume"].astype(float),20)+1e-12)
+        j_ext = (j>80)|(j<20)
+        exit_gate = macd_neg & (cmf<0) & j_ext
+    else:
+        exit_gate = pd.Series(False, index=df.index)
+
+    sig = pd.Series(None, index=df.index, dtype=object)
+    sig = pd.Series(np.where(sig_buy & ~exit_gate, "BUY",
+                    np.where(sig_sell & ~exit_gate, "SELL", None)), index=df.index)
+
+    out = df.copy()
+    out["AO"]=ao; out["dAO"]=dao; out["dAO7"]=dao7
+    out["AO_state"] = np.where(ao_green,"green", np.where(ao_red,"red", None))
+    out["rsi"]=rsi; out["kdj_k"]=k; out["kdj_d"]=d; out["kdj_j"]=j
+    out["wr"]=wr; out["wr_score"]=wr_score; out["bb_width"]=bb_w
+    out["signal"]=sig; out["strength"]=strength
+    return out
+
+# ---------------------- CLI ----------------------
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data", required=True, help="CSV path with timestamp,open,high,low,close,volume")
+    ap.add_argument("--config", default=None, help="config.yaml path")
+    ap.add_argument("--out", default="logs/signals.csv", help="output CSV")
+    args = ap.parse_args()
+
+    cfg = load_cfg(args.config)
+    df = pd.read_csv(args.data)
+    need_cols = ["timestamp","open","high","low","close","volume"]
+    if any(c not in df.columns for c in need_cols):
+        sys.exit(f"Missing columns. Need {need_cols}")
+
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    out = compute_signals(df, cfg)
+
+    # CSV logging per spec
+    log = out[["timestamp","signal","strength","AO","wr","bb_width"]].rename(
+        columns={"wr":"WR","bb_width":"volatility"})
+    log.to_csv(args.out, index=False)
+    print(f"Wrote {args.out}")
+    print(log.tail(10))
+
+if __name__ == "__main__":
+    main()
+
+futures_bot.py
+
+#!/usr/bin/env python3
+# KuCoin Futures REST loop + risk controls + retries + drift check.
+import os, time, uuid, json, hmac, base64, hashlib, argparse, math
+from typing import Dict, Any, Optional, Tuple
+import requests
+import pandas as pd
+import numpy as np
+import yaml
+
+from engine_signals import compute_signals, load_cfg  # reuse engine
+
+RET_CODES_RETRY = {"429", "500000", "500001", "500003", "500004"}
+
+class KC:
+    def __init__(self, key, secret, passphrase, base_url=None, key_version=None, timeout=10, max_retries=3):
+        self.key, self.secret, self.passphrase = key, secret, passphrase
+        self.base = (base_url or os.getenv("KUCOIN_BASE_URL") or "https://api-futures.kucoin.com").rstrip("/")
+        self.key_ver = key_version or os.getenv("KUCOIN_API_KEY_VERSION", "3")
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.time_offset_ms = 0
+        self.sync_time()
+
+    def sync_time(self):
+        try:
+            r = requests.get(f"{self.base}/api/v1/timestamp", timeout=self.timeout)
+            r.raise_for_status(); srv_ms = int(r.json()["data"])
+            self.time_offset_ms = srv_ms - int(time.time()*1000)
+        except Exception:
+            self.time_offset_ms = 0
+
+    def _now_ms(self): return int(time.time()*1000 + self.time_offset_ms)
+    def _sign(self, ts, method, pathq, body):
+        pre = f"{ts}{method}{pathq}{body}"
+        sig = base64.b64encode(hmac.new(self.secret.encode(), pre.encode(), hashlib.sha256).digest()).decode()
+        pph = base64.b64encode(hmac.new(self.secret.encode(), self.passphrase.encode(), hashlib.sha256).digest()).decode()
+        return sig, pph
+
+    def _req(self, method, path, params=None, body=None, auth=False):
+        q = ""
+        if params: q = "?" + "&".join([f"{k}={params[k]}" for k in params])
+        url = f"{self.base}{path}{q}"
+        headers = {"Content-Type":"application/json"}
+        body_str = "" if body is None else json.dumps(body, separators=(",",":"))
+
+        if auth:
+            ts = self._now_ms()
+            if abs(self.time_offset_ms) > 5000:  # hard drift guard
+                self.sync_time(); ts = self._now_ms()
+            sig, pph = self._sign(ts, method, f"{path}{q}", body_str)
+            headers |= {"KC-API-KEY":self.key, "KC-API-SIGN":sig, "KC-API-TIMESTAMP":str(ts),
+                        "KC-API-PASSPHRASE":pph, "KC-API-KEY-VERSION":str(self.key_ver)}
+
+        for attempt in range(self.max_retries):
+            try:
+                r = requests.request(method, url, data=body_str if body_str else None,
+                                     headers=headers, timeout=self.timeout)
+                r.raise_for_status()
+                js = r.json()
+                if "code" in js and js["code"] != "200000":
+                    if js["code"] in RET_CODES_RETRY and attempt < self.max_retries-1:
+                        time.sleep(0.5*(attempt+1)); continue
+                    raise RuntimeError(f"KuCoin error {js.get('code')}: {js}")
+                return js.get("data", js)
+            except requests.RequestException as e:
+                if attempt < self.max_retries-1:
+                    time.sleep(0.5*(attempt+1)); continue
+                raise
+
+    # endpoints
+    def klines(self, symbol, granularity, start_ms, end_ms):
+        return self._req("GET","/api/v1/kline/query",
+                         params={"symbol":symbol,"granularity":granularity,"from":start_ms,"to":end_ms})
+    def place(self, body): return self._req("POST","/api/v1/orders", body=body, auth=True)
+    def cancel_id(self, oid): return self._req("DELETE", f"/api/v1/orders/{oid}", auth=True)
+    def positions(self): return self._req("GET","/api/v1/positions", auth=True)
+    def contracts(self): return self._req("GET","/api/v1/contracts/active")
+
+# --------- Data helpers ----------
+def klines_df(rows):
+    cols = ["timestamp","open","high","low","close","volume_lots","volume"]
+    arr = [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]),
+            float(r[5]), float(r[6] if len(r)>6 else r[5])] for r in rows]
+    return pd.DataFrame(arr, columns=cols).sort_values("timestamp").reset_index(drop=True)
+
+def latest_signal(client: KC, symbol: str, gran: int, lookback=500, cfg: Dict[str,Any]|None=None):
+    ms_bar = gran*60*1000
+    end_ms = int(time.time()*1000) + client.time_offset_ms
+    start_ms = end_ms - lookback*ms_bar
+    rows = client.klines(symbol, gran, start_ms, end_ms)
+    df = klines_df(rows)
+    out = compute_signals(df, cfg or DEFAULT)  # DEFAULT imported through engine_signals load_cfg path
+    last = out.iloc[-1]
+    return out, {
+        "timestamp": int(last["timestamp"]),
+        "signal": str(last["signal"]) if isinstance(last["signal"], str) else None,
+        "strength": int(last["strength"]) if pd.notna(last["strength"]) else 0,
+        "volatility": float(last["bb_width"]) if pd.notna(last["bb_width"]) else 0.0,
+        "AO": float(last["AO"]) if pd.notna(last["AO"]) else 0.0,
+        "wr": float(last["wr"]) if pd.notna(last["wr"]) else 0.0
+    }
+
+def write_log_row(path:str, ts:int, side:str|None, strength:int, ao:float, wr:float, vol:float):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    header = "timestamp,signal,strength,AO,WR,volatility\n"
+    line = f"{ts},{side or ''},{strength},{ao:.8f},{wr:.6f},{vol:.6f}\n"
+    if not os.path.exists(path):
+        with open(path,"w") as f: f.write(header); f.write(line)
+    else:
+        with open(path,"a") as f: f.write(line)
+
+# --------- Risk rules ----------
+def bb_exit(latest_row: pd.Series, side: str) -> bool:
+    # Long exits at upper band touch; Short exits at lower band touch
+    hi, lo = latest_row["high"], latest_row["low"]
+    # Recompute bands using cached width & mid not stored; accept quick proxy via k=2 on recent 20
+    return False  # exit handled using engine signals + opposite signal; direct BB exit optional below
+
+def hard_stop(latest_row: pd.Series, prev_row: pd.Series, side: str) -> bool:
+    # MA/EMA and RSI cross against position
+    if side == "long":
+        ma_flip = prev_row["rsi"] >= prev_row["rsi"].rolling(7).mean().iloc[-1] if not pd.isna(prev_row["rsi"]) else False
+        return False or ma_flip
+    if side == "short":
+        return False
+    return False
+
+# --------- Order helpers ----------
+def flatten(client: KC, symbol: str, remark="flatten") -> Optional[str]:
+    body = {"clientOid": uuid.uuid4().hex, "symbol":symbol, "side":"sell",
+            "type":"market", "closeOrder": True, "reduceOnly": True, "remark": remark}
+    try: return client.place(body).get("orderId")
+    except Exception as e: print("[flatten]", e); return None
+
+def open_value(client: KC, symbol: str, side: str, value_usd: float,
+               leverage:int=3, margin_mode="ISOLATED", position_side="BOTH", remark="entry") -> Optional[str]:
+    body = {"clientOid": uuid.uuid4().hex, "symbol":symbol, "side":side, "type":"market",
+            "marginMode":margin_mode, "leverage":leverage, "positionSide":position_side,
+            "valueQty": f"{value_usd:.2f}", "reduceOnly": False, "remark": remark}
+    try: return client.place(body).get("orderId")
+    except Exception as e: print("[open_value]", e); return None
+
+def current_qty(positions: Any, symbol: str) -> int:
+    for p in positions or []:
+        if p.get("symbol")==symbol: return int(p.get("currentQty", 0))
+    return 0
+
+# --------- CLI loop ----------
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default=None, help="config.yaml")
+    ap.add_argument("--symbol", default="XBTUSDTM")
+    ap.add_argument("--tf", type=int, default=1, help="minute granularity")
+    ap.add_argument("--order-value", type=float, default=20.0)
+    ap.add_argument("--leverage", type=int, default=3)
+    ap.add_argument("--margin-mode", default="ISOLATED")
+    ap.add_argument("--position-side", default="BOTH")
+    ap.add_argument("--live", action="store_true", help="loop; default single-shot")
+    ap.add_argument("--sleep", type=int, default=5)
+    ap.add_argument("--log", default="logs/signals.csv")
+    args = ap.parse_args()
+
+    key, sec, pw = os.getenv("KUCOIN_API_KEY"), os.getenv("KUCOIN_API_SECRET"), os.getenv("KUCOIN_API_PASSPHRASE")
+    if not (key and sec and pw):
+        print("Set KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE"); return
+
+    cfg = load_cfg(args.config)
+    kc = KC(key, sec, pw)
+
+    def once():
+        df, sig = latest_signal(kc, args.symbol, args.tf, 500, cfg)
+        ts = sig["timestamp"]; side = sig["signal"]; strength = sig["strength"]
+        vol = sig["volatility"]; ao = sig["AO"]; wr = sig["wr"]
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {args.symbol} sig={side} strength={strength} vol={vol:.4f} AO={ao:.6f}")
+        write_log_row(args.log, ts, side, strength, ao, wr, vol)
+
+        try: pos = current_qty(kc.positions(), args.symbol)
+        except Exception as e: print("[positions]", e); pos = 0
+
+        # Basic execution model with flip/flatten
+        if side == "BUY":
+            if pos < 0: flatten(kc, args.symbol, "flip_to_long")
+            if pos <= 0:
+                oid = open_value(kc, args.symbol, "buy", args.order_value,
+                                 args.leverage, args.margin_mode, args.position_side, "engine_buy")
+                print("BUY", oid)
+        elif side == "SELL":
+            if pos > 0: flatten(kc, args.symbol, "flip_to_short")
+            if pos >= 0:
+                oid = open_value(kc, args.symbol, "sell", args.order_value,
+                                 args.leverage, args.margin_mode, args.position_side, "engine_sell")
+                print("SELL", oid)
+        # Optional: direct BB exits or RSI/MA hard stops could be checked here
+        # using the last two rows of df and calling flatten(...).
+
+    if not args.live:
+        once(); return
+
+    sleep_s = max(5, args.sleep)
+    while True:
+        try: once()
+        except Exception as e: print("[loop]", e)
+        time.sleep(sleep_s)
+
+if __name__ == "__main__":
+    main()
+
+config.yaml
+
+periods:
+  rsi: 14
+  kdj_n: 9
+  kdj_k: 3
+  kdj_d: 3
+  wr: 19
+  ma: 5
+  ema: 2
+  bb_n: 20
+bb_k: 2.0
+wr_levels:
+  ob: -20
+  os: -80
+volatility_min: 0.02
+weights:
+  ao: 25
+  rsi: 15
+  kdj: 15
+  ma: 10
+  wr: 15
+  bb_align: 10
+  vol: 10
+use_macd_exit: true
+
+#.env.example
+
+KUCOIN_API_KEY=your_key
+KUCOIN_API_SECRET=your_secret
+KUCOIN_API_PASSPHRASE=your_passphrase
+# KUCOIN_API_KEY_VERSION=3
+# KUCOIN_BASE_URL=https://api-futures.kucoin.com
+
+patch this bot with:
+
+1. Add ATR to the signal engine
+def atr(high, low, close, n=14):
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
+    return tr.rolling(n, min_periods=n).mean()
+    
+   Then in compute_signals() (before return):
+    out["ATR"] = atr(high, low, close, 14)
+
+
+2. Map signal strength to risk parameters - At the top of futures_bot.py, define a deterministic scaling model:
+def dynamic_risk(signal_strength: int, atr_value: float,
+                 base_value_usd: float = 20.0,
+                 max_leverage: int = 10) -> dict:
+    """
+    Maps 0–100 strength → leverage, position value, TP/SL distance.
+    ATR used to scale price distance risk.
+    """
+    s = max(0, min(signal_strength, 100))
+    lev = 1 + (s / 100) * (max_leverage - 1)
+    # position value between 0.5× and 2× base
+    value = base_value_usd * (0.5 + s / 100 * 1.5)
+    # take-profit / stop-loss multiples of ATR
+    tp_mult = 1.5 + s / 100 * 1.0    # 1.5–2.5 ATR
+    sl_mult = 1.0 - s / 100 * 0.5    # 1.0–0.5 ATR
+    tp = atr_value * tp_mult
+    sl = atr_value * sl_mult
+    return {"leverage": round(lev, 2),
+            "value_usd": round(value, 2),
+            "tp_dist": tp,
+            "sl_dist": sl}
+
+3. Integrate into live logic
+df, sig = latest_signal(kc, args.symbol, args.tf, 500, cfg)
+atr_val = float(df["ATR"].iloc[-1]) if "ATR" in df.columns else 0.0
+risk = dynamic_risk(sig["strength"], atr_val,
+                    base_value_usd=args.order_value,
+                    max_leverage=args.leverage)
+lev = risk["leverage"]; val = risk["value_usd"]
+
+print(f"Signal {sig['signal']} str={sig['strength']} lev={lev}x val={val}$ ATR={atr_val:.4f}")
+
+And use:
+
+oid = open_value(kc, args.symbol, "buy",
+                 val, lev, args.margin_mode,
+                 args.position_side, "engine_buy")   (similarly for sell).
+
+
+4. Apply TP/SL via limit orders
+
+After each open order, immediately stage exit orders:
+
+def place_tp_sl(client: KC, symbol: str, side: str,
+                entry_price: float, tp_dist: float, sl_dist: float):
+    if side == "buy":
+        tp_price = entry_price + tp_dist
+        sl_price = entry_price - sl_dist
+    else:
+        tp_price = entry_price - tp_dist
+        sl_price = entry_price + sl_dist
+    # take-profit limit (reduceOnly)
+    tp_body = {"clientOid": uuid.uuid4().hex, "symbol": symbol,
+               "side": "sell" if side=="buy" else "buy",
+               "type": "limit", "price": f"{tp_price:.6f}",
+               "reduceOnly": True, "remark": "tp_auto"}
+    sl_body = {"clientOid": uuid.uuid4().hex, "symbol": symbol,
+               "side": "sell" if side=="buy" else "buy",
+               "type": "stopMarket", "stop": "down" if side=="buy" else "up",
+               "stopPrice": f"{sl_price:.6f}",
+               "reduceOnly": True, "remark": "sl_auto"}
+    try:
+        client.place(tp_body)
+        client.place(sl_body)
+    except Exception as e:
+        print("[tp/sl]", e)
+
+
+Call this immediately after each market entry once you fetch entry_price via GET /api/v1/orders/{orderId} or last fill price.
+
+5. Parameter tuning
+you want position value to scale with account equity instead of a fixed base amount, the formula changes like this.
+
+1. Define key parameters
+
+Let:
+
+E = current account equity in USDT
+
+r = base risk fraction per trade (e.g. 0.01 = 1 %)
+
+S = signal strength 0–100
+
+maxLev = maximum allowed leverage (e.g. 10)
+
+2. Dynamic formulas
+
+Leverage
+
+lev = 1 + (S / 100) * (maxLev - 1)
+
+
+Risk fraction
+
+risk_frac = r * (0.5 + 1.5 * S / 100)
+
+
+→ low conviction uses 0.5× base risk, high conviction uses 2×.
+
+Position value (notional)
+
+val = E * risk_frac * lev
+
+
+Example: with 1000 USDT equity, base r = 1 %, S = 80, maxLev = 10 →
+risk_frac = 0.01 × (0.5 + 1.5×0.8) = 0.022, lev = 8.2 →
+val ≈ 1000 × 0.022 × 8.2 = 180 USDT.
+
+Take-profit / stop-loss
+
+TP = ATR * (1.5 + 1.0 * S / 100)   # 1.5–2.5×ATR
+SL = ATR * (1.0 - 0.5 * S / 100)   # 1.0–0.5×ATR
+
+
+Effective position size in contracts (USDT-margined)
+
+contracts = val / current_price
+
+3. Integration in code
+
+Inside once() in futures_bot.py:
+
+acct = kc._req("GET", "/api/v1/account-overview", auth=True)
+equity = float(acct.get("accountEquity", 0))
+risk = dynamic_risk_strength(sig["strength"], equity, atr_val,
+                             base_risk=0.01, max_leverage=args.leverage)
+lev = risk["lev"]; val = risk["val"]
+
+
+Dynamic function:
+
+def dynamic_risk_strength(S, equity, atr, base_risk=0.01, max_leverage=10):
+    S = max(0, min(S, 100))
+    lev = 1 + (S/100)*(max_leverage-1)
+    risk_frac = base_risk * (0.5 + 1.5*S/100)
+    val = equity * risk_frac * lev
+    tp_mult = 1.5 + S/100
+    sl_mult = 1.0 - 0.5*S/100
+    return {"lev": round(lev,2),
+            "val": round(val,2),
+            "tp": atr*tp_mult,
+            "sl": atr*sl_mult}
+
+4. Resulting behaviour
+Strength	Risk % of equity	Leverage	Effective Exposure	TP×ATR	SL×ATR
+0	0.5 %	1 ×	0.5 % of E	1.5	1.0
+25	0.88 %	3.25×	2.9 % of E	1.75	0.88
+50	1.25 %	5.5×	6.9 % of E	2.0	0.75
+75	1.63 %	7.75×	12.6 % of E	2.25	0.63
+100	2.0 %	10×	20 % of E	2.5	0.5
+
+This structure ties all risk parameters—leverage, size, TP, SL—directly to both signal conviction and account equity, maintaining consistent percentage-based exposure as balance grows or shrinks.
+
+

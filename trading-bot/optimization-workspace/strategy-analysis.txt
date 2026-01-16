@@ -1,0 +1,9 @@
+## Strategy Components Found
+
+### Signal Generators
+
+### Exit Logic
+
+### Position Sizing
+
+### Market Data Sources

@@ -1,0 +1,600 @@
+//+------------------------------------------------------------------+
+//|                              LevelClusteringIndicator.mq5        |
+//|                   Order Book Support/Resistance Visualization     |
+//|                        With Fake Wall Detection                   |
+//+------------------------------------------------------------------+
+#property copyright "Level Clustering Indicator"
+#property version   "1.00"
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots 0
+
+//--- Input parameters
+input group "=== Clustering Settings ==="
+input int      InpMinClusterSize = 3;      // Minimum Orders in Cluster
+input double   InpClusterDistance = 0.0005;// Cluster Distance (% of price)
+input double   InpMinWallSize = 1.0;       // Minimum Wall Size (lots)
+input int      InpHistoryBars = 500;       // History Bars to Track
+
+input group "=== ATR Normalization ==="
+input bool     InpUseATRNormalize = true;  // Use ATR Normalization
+input int      InpATRPeriod = 14;          // ATR Period
+input double   InpATRMultiplier = 2.0;     // ATR Distance Multiplier
+
+input group "=== Fake Wall Detection ==="
+input bool     InpDetectFakeWalls = true;  // Enable Fake Wall Detection
+input int      InpWallLifetime = 30;       // Min Wall Lifetime (seconds)
+input double   InpWallRemovalThreshold = 0.8; // Wall Removal % Threshold
+
+input group "=== Visualization ==="
+input color    InpSupportColor = clrDodgerBlue;    // Support Level Color
+input color    InpResistanceColor = clrOrangeRed;  // Resistance Level Color
+input color    InpFakeWallColor = clrYellow;       // Fake Wall Color
+input int      InpLevelWidth = 2;          // Level Line Width
+input ENUM_LINE_STYLE InpLevelStyle = STYLE_SOLID; // Level Line Style
+input bool     InpShowLabels = true;       // Show Volume Labels
+input int      InpFontSize = 8;            // Label Font Size
+
+input group "=== Alerts ==="
+input bool     InpAlertFakeWalls = true;   // Alert on Fake Walls
+input bool     InpAlertNewLevels = false;  // Alert on New Levels
+input bool     InpLogToFile = true;        // Log Levels to File
+
+//--- Structures
+struct OrderLevel
+{
+   datetime timestamp;
+   double price;
+   double volume;
+   int type;              // 0=bid/support, 1=ask/resistance
+   bool isFake;
+   datetime firstSeen;
+   datetime lastSeen;
+   double maxVolume;
+   int clusterSize;       // Number of orders in cluster
+   double atrDistance;    // Distance from price in ATR units
+};
+
+struct LevelCluster
+{
+   double centerPrice;
+   double totalVolume;
+   int orderCount;
+   int type;              // 0=support, 1=resistance
+   bool isFake;
+   datetime firstSeen;
+   datetime lastUpdate;
+   double strength;       // 0-100 score
+   string objectName;
+};
+
+//--- Global variables
+OrderLevel orderHistory[];
+LevelCluster activeClusters[];
+MqlBookInfo bookArray[];
+int atrHandle = INVALID_HANDLE;
+int fileHandle = INVALID_HANDLE;
+bool orderBookAvailable = false;
+datetime lastUpdate = 0;
+string objPrefix = "LC_";
+
+//+------------------------------------------------------------------+
+//| Custom indicator initialization                                  |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   //--- Subscribe to order book
+   if(!MarketBookAdd(Symbol()))
+   {
+      Print("Order Book not available for ", Symbol());
+      orderBookAvailable = false;
+      return(INIT_SUCCEEDED); // Continue to show message
+   }
+   else
+   {
+      orderBookAvailable = true;
+      Print("Order Book subscribed for level clustering");
+   }
+   
+   //--- Initialize ATR
+   atrHandle = iATR(Symbol(), PERIOD_CURRENT, InpATRPeriod);
+   if(atrHandle == INVALID_HANDLE)
+   {
+      Print("Failed to create ATR indicator");
+      return(INIT_FAILED);
+   }
+   
+   //--- Initialize arrays
+   ArrayResize(orderHistory, 0);
+   ArrayResize(activeClusters, 0);
+   
+   //--- Open log file
+   if(InpLogToFile)
+   {
+      string filename = "LevelClustering_" + Symbol() + "_Levels.csv";
+      fileHandle = FileOpen(filename, FILE_WRITE|FILE_CSV|FILE_ANSI, ",");
+      if(fileHandle != INVALID_HANDLE)
+      {
+         FileWrite(fileHandle, "Timestamp", "Price", "Type", "Volume", 
+                   "ClusterSize", "IsFake", "Strength", "ATR_Distance");
+      }
+   }
+   
+   //--- Set timer
+   EventSetTimer(2); // Update every 2 seconds
+   
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator deinitialization                                |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   //--- Unsubscribe from order book
+   if(orderBookAvailable)
+      MarketBookRelease(Symbol());
+   
+   //--- Delete all objects
+   DeleteAllLevels();
+   
+   //--- Release ATR
+   if(atrHandle != INVALID_HANDLE)
+      IndicatorRelease(atrHandle);
+   
+   //--- Close log file
+   if(fileHandle != INVALID_HANDLE)
+   {
+      FileClose(fileHandle);
+      fileHandle = INVALID_HANDLE;
+   }
+   
+   EventKillTimer();
+}
+
+//+------------------------------------------------------------------+
+//| Timer function                                                    |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   if(!orderBookAvailable) return;
+   
+   //--- Capture current order book snapshot
+   CaptureOrderBookSnapshot();
+   
+   //--- Detect fake walls (walls that disappeared)
+   if(InpDetectFakeWalls)
+      DetectFakeWalls();
+   
+   //--- Build level clusters
+   BuildLevelClusters();
+   
+   //--- Visualize levels
+   VisualizeLevels();
+   
+   //--- Clean old history
+   CleanOldHistory();
+   
+   lastUpdate = TimeCurrent();
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator iteration                                       |
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+{
+   return(rates_total);
+}
+
+//+------------------------------------------------------------------+
+//| Capture Order Book Snapshot                                      |
+//+------------------------------------------------------------------+
+void CaptureOrderBookSnapshot()
+{
+   if(!MarketBookGet(Symbol(), bookArray))
+      return;
+   
+   datetime now = TimeCurrent();
+   double currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   
+   //--- Get ATR value
+   double atrValue = 0;
+   if(InpUseATRNormalize)
+   {
+      double atrBuffer[];
+      ArraySetAsSeries(atrBuffer, true);
+      if(CopyBuffer(atrHandle, 0, 0, 1, atrBuffer) > 0)
+         atrValue = atrBuffer[0];
+   }
+   
+   //--- Process each order book level
+   for(int i = 0; i < ArraySize(bookArray); i++)
+   {
+      double price = bookArray[i].price;
+      double volume = bookArray[i].volume_real;
+      int type = -1;
+      
+      if(bookArray[i].type == BOOK_TYPE_BUY || bookArray[i].type == BOOK_TYPE_BUY_MARKET)
+         type = 0; // Support
+      else if(bookArray[i].type == BOOK_TYPE_SELL || bookArray[i].type == BOOK_TYPE_SELL_MARKET)
+         type = 1; // Resistance
+      else
+         continue;
+      
+      //--- Only track significant walls
+      if(volume < InpMinWallSize)
+         continue;
+      
+      //--- Calculate ATR distance
+      double atrDist = 0;
+      if(InpUseATRNormalize && atrValue > 0)
+         atrDist = MathAbs(price - currentPrice) / atrValue;
+      
+      //--- Check if this level already exists in history
+      bool found = false;
+      for(int j = 0; j < ArraySize(orderHistory); j++)
+      {
+         if(MathAbs(orderHistory[j].price - price) < price * InpClusterDistance &&
+            orderHistory[j].type == type)
+         {
+            //--- Update existing level
+            orderHistory[j].volume = volume;
+            orderHistory[j].lastSeen = now;
+            if(volume > orderHistory[j].maxVolume)
+               orderHistory[j].maxVolume = volume;
+            orderHistory[j].atrDistance = atrDist;
+            found = true;
+            break;
+         }
+      }
+      
+      //--- Add new level
+      if(!found)
+      {
+         int newSize = ArraySize(orderHistory) + 1;
+         ArrayResize(orderHistory, newSize);
+         
+         orderHistory[newSize-1].timestamp = now;
+         orderHistory[newSize-1].price = price;
+         orderHistory[newSize-1].volume = volume;
+         orderHistory[newSize-1].type = type;
+         orderHistory[newSize-1].isFake = false;
+         orderHistory[newSize-1].firstSeen = now;
+         orderHistory[newSize-1].lastSeen = now;
+         orderHistory[newSize-1].maxVolume = volume;
+         orderHistory[newSize-1].clusterSize = 1;
+         orderHistory[newSize-1].atrDistance = atrDist;
+         
+         if(InpAlertNewLevels)
+         {
+            string levelType = (type == 0) ? "Support" : "Resistance";
+            Alert(Symbol(), " - New ", levelType, " level at ", DoubleToString(price, _Digits), 
+                  " Volume: ", DoubleToString(volume, 2));
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Detect Fake Walls                                                 |
+//+------------------------------------------------------------------+
+void DetectFakeWalls()
+{
+   datetime now = TimeCurrent();
+   
+   for(int i = 0; i < ArraySize(orderHistory); i++)
+   {
+      if(orderHistory[i].isFake) continue; // Already marked as fake
+      
+      //--- Check if wall has disappeared
+      int timeSinceLastSeen = (int)(now - orderHistory[i].lastSeen);
+      
+      if(timeSinceLastSeen > InpWallLifetime)
+      {
+         //--- Wall existed but disappeared quickly
+         int lifetime = (int)(orderHistory[i].lastSeen - orderHistory[i].firstSeen);
+         
+         if(lifetime < InpWallLifetime)
+         {
+            //--- Mark as fake - appeared and disappeared too quickly
+            orderHistory[i].isFake = true;
+            
+            if(InpAlertFakeWalls)
+            {
+               string levelType = (orderHistory[i].type == 0) ? "Support" : "Resistance";
+               Alert(Symbol(), " - FAKE WALL detected! ", levelType, " at ", 
+                     DoubleToString(orderHistory[i].price, _Digits), 
+                     " Volume: ", DoubleToString(orderHistory[i].maxVolume, 2));
+            }
+         }
+         else
+         {
+            //--- Check if volume was significantly reduced before disappearing
+            if(orderHistory[i].volume < orderHistory[i].maxVolume * InpWallRemovalThreshold)
+            {
+               orderHistory[i].isFake = true;
+               
+               if(InpAlertFakeWalls)
+               {
+                  Alert(Symbol(), " - SPOOFING detected! Wall pulled at ", 
+                        DoubleToString(orderHistory[i].price, _Digits));
+               }
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Build Level Clusters                                             |
+//+------------------------------------------------------------------+
+void BuildLevelClusters()
+{
+   ArrayResize(activeClusters, 0);
+   
+   //--- Sort order history by price
+   SortOrderHistoryByPrice();
+   
+   //--- Cluster nearby levels
+   for(int i = 0; i < ArraySize(orderHistory); i++)
+   {
+      //--- Skip old or fake walls for clustering
+      if(TimeCurrent() - orderHistory[i].lastSeen > InpWallLifetime * 2)
+         continue;
+      
+      bool addedToCluster = false;
+      
+      //--- Try to add to existing cluster
+      for(int j = 0; j < ArraySize(activeClusters); j++)
+      {
+         if(activeClusters[j].type != orderHistory[i].type)
+            continue;
+         
+         double priceDiff = MathAbs(activeClusters[j].centerPrice - orderHistory[i].price);
+         double maxDiff = orderHistory[i].price * InpClusterDistance;
+         
+         if(priceDiff <= maxDiff)
+         {
+            //--- Add to cluster
+            activeClusters[j].totalVolume += orderHistory[i].volume;
+            activeClusters[j].orderCount++;
+            activeClusters[j].lastUpdate = orderHistory[i].lastSeen;
+            
+            if(orderHistory[i].isFake)
+               activeClusters[j].isFake = true;
+            
+            //--- Recalculate center price (weighted average)
+            activeClusters[j].centerPrice = 
+               (activeClusters[j].centerPrice * (activeClusters[j].orderCount - 1) + orderHistory[i].price) / 
+               activeClusters[j].orderCount;
+            
+            addedToCluster = true;
+            break;
+         }
+      }
+      
+      //--- Create new cluster
+      if(!addedToCluster)
+      {
+         int newSize = ArraySize(activeClusters) + 1;
+         ArrayResize(activeClusters, newSize);
+         
+         activeClusters[newSize-1].centerPrice = orderHistory[i].price;
+         activeClusters[newSize-1].totalVolume = orderHistory[i].volume;
+         activeClusters[newSize-1].orderCount = 1;
+         activeClusters[newSize-1].type = orderHistory[i].type;
+         activeClusters[newSize-1].isFake = orderHistory[i].isFake;
+         activeClusters[newSize-1].firstSeen = orderHistory[i].firstSeen;
+         activeClusters[newSize-1].lastUpdate = orderHistory[i].lastSeen;
+         activeClusters[newSize-1].objectName = "";
+         
+         //--- Calculate strength (0-100)
+         double volumeScore = MathMin(orderHistory[i].volume / 10.0, 1.0) * 50;
+         double clusterScore = MathMin(activeClusters[newSize-1].orderCount / (double)InpMinClusterSize, 1.0) * 50;
+         activeClusters[newSize-1].strength = volumeScore + clusterScore;
+      }
+   }
+   
+   //--- Filter weak clusters
+   for(int i = ArraySize(activeClusters) - 1; i >= 0; i--)
+   {
+      if(activeClusters[i].orderCount < InpMinClusterSize)
+      {
+         //--- Remove weak cluster
+         ArrayRemove(activeClusters, i, 1);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Visualize Levels on Chart                                        |
+//+------------------------------------------------------------------+
+void VisualizeLevels()
+{
+   //--- Delete old level objects
+   DeleteAllLevels();
+   
+   double currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   
+   //--- Get ATR for distance calculation
+   double atrValue = 0;
+   if(InpUseATRNormalize)
+   {
+      double atrBuffer[];
+      ArraySetAsSeries(atrBuffer, true);
+      if(CopyBuffer(atrHandle, 0, 0, 1, atrBuffer) > 0)
+         atrValue = atrBuffer[0];
+   }
+   
+   //--- Draw each cluster
+   for(int i = 0; i < ArraySize(activeClusters); i++)
+   {
+      //--- Only show levels within ATR distance if enabled
+      if(InpUseATRNormalize && atrValue > 0)
+      {
+         double distance = MathAbs(activeClusters[i].centerPrice - currentPrice);
+         if(distance > atrValue * InpATRMultiplier)
+            continue; // Too far away
+      }
+      
+      //--- Create object name
+      string objName = objPrefix + "Level_" + IntegerToString(i) + "_" + 
+                       IntegerToString((int)activeClusters[i].centerPrice);
+      
+      activeClusters[i].objectName = objName;
+      
+      //--- Determine color
+      color lineColor = InpSupportColor;
+      if(activeClusters[i].type == 1)
+         lineColor = InpResistanceColor;
+      if(activeClusters[i].isFake)
+         lineColor = InpFakeWallColor;
+      
+      //--- Create horizontal line
+      datetime timeStart = iTime(Symbol(), PERIOD_CURRENT, InpHistoryBars);
+      datetime timeEnd = TimeCurrent() + PeriodSeconds(PERIOD_CURRENT) * 50;
+      
+      ObjectCreate(0, objName, OBJ_TREND, 0, timeStart, activeClusters[i].centerPrice, 
+                   timeEnd, activeClusters[i].centerPrice);
+      ObjectSetInteger(0, objName, OBJPROP_COLOR, lineColor);
+      ObjectSetInteger(0, objName, OBJPROP_WIDTH, InpLevelWidth);
+      ObjectSetInteger(0, objName, OBJPROP_STYLE, InpLevelStyle);
+      ObjectSetInteger(0, objName, OBJPROP_RAY_RIGHT, true);
+      ObjectSetInteger(0, objName, OBJPROP_BACK, true);
+      ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+      
+      //--- Add label with volume info
+      if(InpShowLabels)
+      {
+         string labelName = objName + "_Label";
+         string labelText = "";
+         
+         if(activeClusters[i].isFake)
+            labelText = "FAKE ";
+         
+         labelText += (activeClusters[i].type == 0) ? "SUP " : "RES ";
+         labelText += DoubleToString(activeClusters[i].totalVolume, 1) + " lots";
+         labelText += " [" + IntegerToString(activeClusters[i].orderCount) + "]";
+         
+         if(InpUseATRNormalize && atrValue > 0)
+         {
+            double atrDist = MathAbs(activeClusters[i].centerPrice - currentPrice) / atrValue;
+            labelText += " (" + DoubleToString(atrDist, 1) + " ATR)";
+         }
+         
+         ObjectCreate(0, labelName, OBJ_TEXT, 0, TimeCurrent(), activeClusters[i].centerPrice);
+         ObjectSetString(0, labelName, OBJPROP_TEXT, labelText);
+         ObjectSetInteger(0, labelName, OBJPROP_COLOR, lineColor);
+         ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, InpFontSize);
+         ObjectSetString(0, labelName, OBJPROP_FONT, "Arial");
+         ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, ANCHOR_LEFT);
+         ObjectSetInteger(0, labelName, OBJPROP_BACK, false);
+         ObjectSetInteger(0, labelName, OBJPROP_SELECTABLE, false);
+      }
+   }
+   
+   ChartRedraw();
+   
+   //--- Log clusters to file
+   if(InpLogToFile && fileHandle != INVALID_HANDLE)
+      LogClusters();
+}
+
+//+------------------------------------------------------------------+
+//| Log Clusters to File                                             |
+//+------------------------------------------------------------------+
+void LogClusters()
+{
+   for(int i = 0; i < ArraySize(activeClusters); i++)
+   {
+      string typeStr = (activeClusters[i].type == 0) ? "Support" : "Resistance";
+      string fakeStr = activeClusters[i].isFake ? "YES" : "NO";
+      
+      double atrDist = 0;
+      double atrBuffer[];
+      ArraySetAsSeries(atrBuffer, true);
+      if(CopyBuffer(atrHandle, 0, 0, 1, atrBuffer) > 0)
+      {
+         double currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+         atrDist = MathAbs(activeClusters[i].centerPrice - currentPrice) / atrBuffer[0];
+      }
+      
+      FileWrite(fileHandle,
+                TimeToString(TimeCurrent()),
+                DoubleToString(activeClusters[i].centerPrice, _Digits),
+                typeStr,
+                DoubleToString(activeClusters[i].totalVolume, 2),
+                IntegerToString(activeClusters[i].orderCount),
+                fakeStr,
+                DoubleToString(activeClusters[i].strength, 1),
+                DoubleToString(atrDist, 2));
+   }
+   
+   FileFlush(fileHandle);
+}
+
+//+------------------------------------------------------------------+
+//| Delete All Level Objects                                         |
+//+------------------------------------------------------------------+
+void DeleteAllLevels()
+{
+   int total = ObjectsTotal(0, 0, OBJ_TREND);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, 0, OBJ_TREND);
+      if(StringFind(name, objPrefix) == 0)
+         ObjectDelete(0, name);
+   }
+   
+   total = ObjectsTotal(0, 0, OBJ_TEXT);
+   for(int i = total - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i, 0, OBJ_TEXT);
+      if(StringFind(name, objPrefix) == 0)
+         ObjectDelete(0, name);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Clean Old History                                                |
+//+------------------------------------------------------------------+
+void CleanOldHistory()
+{
+   datetime cutoffTime = TimeCurrent() - PeriodSeconds(PERIOD_CURRENT) * InpHistoryBars;
+   
+   for(int i = ArraySize(orderHistory) - 1; i >= 0; i--)
+   {
+      if(orderHistory[i].lastSeen < cutoffTime)
+         ArrayRemove(orderHistory, i, 1);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Sort Order History by Price                                      |
+//+------------------------------------------------------------------+
+void SortOrderHistoryByPrice()
+{
+   int n = ArraySize(orderHistory);
+   for(int i = 0; i < n - 1; i++)
+   {
+      for(int j = 0; j < n - i - 1; j++)
+      {
+         if(orderHistory[j].price > orderHistory[j + 1].price)
+         {
+            OrderLevel temp = orderHistory[j];
+            orderHistory[j] = orderHistory[j + 1];
+            orderHistory[j + 1] = temp;
+         }
+      }
+   }
+}
+//+------------------------------------------------------------------+

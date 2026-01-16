@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Miniature Enigma - Live Screener</title>
+  <style>
+    :root {
+      --bg-primary: #0a0e17;
+      --bg-secondary: #111827;
+      --bg-card: #1a2332;
+      --border: #2d3748;
+      --text-primary: #e2e8f0;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-green: #10b981;
+      --accent-red: #ef4444;
+      --accent-blue: #3b82f6;
+      --accent-yellow: #f59e0b;
+      --accent-purple: #8b5cf6;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+
+    .logo-text h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .logo-text span {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .header-status {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .timeframe-selector {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.875rem;
+    }
+
+    .timeframe-selector label {
+      color: var(--text-muted);
+    }
+
+    .timeframe-selector select {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text-primary);
+      font-size: 0.875rem;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .timeframe-selector select:hover {
+      border-color: var(--accent-blue);
+    }
+
+    .timeframe-selector select:focus {
+      border-color: var(--accent-blue);
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+    }
+
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.875rem;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.live { background: var(--accent-green); }
+    .status-dot.offline { background: var(--accent-red); }
+    .status-dot.scanning { background: var(--accent-yellow); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.2); }
+    }
+
+    /* Main Layout */
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 350px;
+      gap: 24px;
+      padding: 24px;
+      max-width: 1800px;
+      margin: 0 auto;
+    }
+
+    @media (max-width: 1200px) {
+      .main { grid-template-columns: 1fr; }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .card-title {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .card-badge {
+      background: var(--bg-secondary);
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .card-body {
+      padding: 20px;
+    }
+
+    /* Stats Grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 1100px) {
+      .stats-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+
+    @media (max-width: 768px) {
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+
+    .stat-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+
+    .stat-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+    }
+
+    .stat-value.green { color: var(--accent-green); }
+    .stat-value.red { color: var(--accent-red); }
+    .stat-value.blue { color: var(--accent-blue); }
+    .stat-value.yellow { color: var(--accent-yellow); }
+
+    .stat-change {
+      font-size: 0.75rem;
+      margin-top: 4px;
+      color: var(--text-muted);
+    }
+
+    /* Signals Table */
+    .signals-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .signals-table th {
+      text-align: left;
+      padding: 12px 16px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-secondary);
+    }
+
+    .signals-table td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.875rem;
+    }
+
+    .signals-table tr:hover {
+      background: rgba(59, 130, 246, 0.05);
+    }
+
+    .signals-table tr.new-signal {
+      animation: highlight 2s ease-out;
+    }
+
+    @keyframes highlight {
+      0% { background: rgba(16, 185, 129, 0.2); }
+      100% { background: transparent; }
+    }
+
+    .symbol-cell {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .symbol-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--bg-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .symbol-name {
+      font-weight: 600;
+    }
+
+    .symbol-pair {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .direction-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .direction-badge.long {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-green);
+    }
+
+    .direction-badge.short {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--accent-red);
+    }
+
+    .score-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .score-fill {
+      width: 60px;
+      height: 6px;
+      background: var(--bg-secondary);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .score-fill-inner {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    .score-fill-inner.high { background: var(--accent-green); }
+    .score-fill-inner.medium { background: var(--accent-yellow); }
+    .score-fill-inner.low { background: var(--accent-red); }
+
+    .score-value {
+      font-weight: 600;
+      min-width: 35px;
+    }
+
+    .score-value.high { color: var(--accent-green); }
+    .score-value.medium { color: var(--accent-yellow); }
+    .score-value.low { color: var(--text-muted); }
+    .score-value.green { color: var(--accent-green) !important; }
+    .score-value.red { color: var(--accent-red) !important; }
+
+    .quality-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .quality-badge.high { background: rgba(16, 185, 129, 0.2); color: var(--accent-green); }
+    .quality-badge.medium { background: rgba(245, 158, 11, 0.2); color: var(--accent-yellow); }
+    .quality-badge.low { background: rgba(148, 163, 184, 0.2); color: var(--text-muted); }
+
+    .price-cell {
+      font-family: 'SF Mono', Monaco, monospace;
+    }
+
+    .change-positive { color: var(--accent-green); }
+    .change-negative { color: var(--accent-red); }
+
+    /* Scan Activity */
+    .scan-activity {
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .scan-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.875rem;
+    }
+
+    .scan-item:last-child {
+      border-bottom: none;
+    }
+
+    .scan-number {
+      background: var(--bg-secondary);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--accent-blue);
+    }
+
+    .scan-time {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+    }
+
+    .scan-duration {
+      margin-left: auto;
+      font-family: 'SF Mono', Monaco, monospace;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Live Indicator */
+    .live-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      border-radius: 8px;
+      font-size: 0.875rem;
+      color: var(--accent-green);
+    }
+
+    .live-indicator .dot {
+      width: 8px;
+      height: 8px;
+      background: var(--accent-green);
+      border-radius: 50%;
+      animation: pulse 1.5s infinite;
+    }
+
+    /* Regime Badge */
+    .regime-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .regime-badge.trend-up { background: rgba(16, 185, 129, 0.2); color: var(--accent-green); }
+    .regime-badge.trend-down { background: rgba(239, 68, 68, 0.2); color: var(--accent-red); }
+    .regime-badge.ranging { background: rgba(148, 163, 184, 0.2); color: var(--text-secondary); }
+    .regime-badge.volatile { background: rgba(245, 158, 11, 0.2); color: var(--accent-yellow); }
+    .regime-badge.breakout { background: rgba(139, 92, 246, 0.2); color: var(--accent-purple); }
+
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--bg-secondary);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
+    }
+
+    /* Connection Status Banner */
+    .connection-banner {
+      padding: 10px 24px;
+      text-align: center;
+      font-size: 0.875rem;
+      display: none;
+    }
+
+    .connection-banner.disconnected {
+      display: block;
+      background: rgba(239, 68, 68, 0.1);
+      border-bottom: 1px solid rgba(239, 68, 68, 0.3);
+      color: var(--accent-red);
+    }
+
+    .connection-banner.connecting {
+      display: block;
+      background: rgba(245, 158, 11, 0.1);
+      border-bottom: 1px solid rgba(245, 158, 11, 0.3);
+      color: var(--accent-yellow);
+    }
+  </style>
+</head>
+<body>
+  <div id="connectionBanner" class="connection-banner"></div>
+
+  <header class="header">
+    <div class="logo">
+      <div class="logo-icon">⚡</div>
+      <div class="logo-text">
+        <h1>MINIATURE ENIGMA</h1>
+        <span>Live Market Screener</span>
+      </div>
+    </div>
+    <div class="header-status">
+      <div class="timeframe-selector">
+        <label>Timeframe:</label>
+        <select id="timeframeSelect" onchange="setTimeframe(this.value)">
+          <option value="5min">5m</option>
+          <option value="15min" selected>15m</option>
+          <option value="30min">30m</option>
+          <option value="1hour">1H</option>
+          <option value="2hour">2H</option>
+          <option value="4hour">4H</option>
+        </select>
+      </div>
+      <div class="status-item">
+        <span class="status-dot" id="wsStatus"></span>
+        <span id="wsStatusText">Connecting...</span>
+      </div>
+      <div class="status-item">
+        <span class="status-dot scanning" id="scanStatus"></span>
+        <span>Scan #<span id="scanCount">0</span></span>
+      </div>
+      <div class="live-indicator">
+        <span class="dot"></span>
+        <span>LIVE DATA</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="content">
+      <!-- Stats -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Total Scans</div>
+          <div class="stat-value blue" id="totalScans">0</div>
+          <div class="stat-change">Since startup</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Coins Tracked</div>
+          <div class="stat-value" id="coinsTracked">0</div>
+          <div class="stat-change">Active symbols</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Avg Scan Time</div>
+          <div class="stat-value yellow" id="avgScanTime">0ms</div>
+          <div class="stat-change">Per cycle</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Signals Found</div>
+          <div class="stat-value green" id="signalsFound">0</div>
+          <div class="stat-change">Score ≥ 50</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Paper Balance</div>
+          <div class="stat-value green" id="paperBalance">$10,000</div>
+          <div class="stat-change">Available</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Equity</div>
+          <div class="stat-value" id="totalEquity">$10,000</div>
+          <div class="stat-change" id="totalPnL">+$0.00</div>
+        </div>
+      </div>
+
+      <!-- Positions Card -->
+      <div class="card" style="margin-bottom: 24px;">
+        <div class="card-header">
+          <span class="card-title">Open Positions</span>
+          <span class="card-badge" id="positionCount">0 positions</span>
+        </div>
+        <div class="card-body" style="padding: 0; overflow-x: auto;">
+          <table class="signals-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Dir</th>
+                <th>Lev</th>
+                <th>Size</th>
+                <th>Entry</th>
+                <th>Current</th>
+                <th>SL</th>
+                <th>TP</th>
+                <th>P&L</th>
+              </tr>
+            </thead>
+            <tbody id="positionsBody">
+              <tr>
+                <td colspan="9">
+                  <div class="empty-state">No open positions</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Signals Table -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Top Signals</span>
+          <span class="card-badge">Score ≥ 50</span>
+        </div>
+        <div class="card-body" style="padding: 0;">
+          <table class="signals-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Direction</th>
+                <th>Base</th>
+                <th>Final</th>
+                <th>Quality</th>
+                <th>Price</th>
+                <th>24h</th>
+              </tr>
+            </thead>
+            <tbody id="signalsBody">
+              <tr>
+                <td colspan="7">
+                  <div class="empty-state">
+                    <div class="empty-state-icon">📡</div>
+                    <div>Waiting for signals...</div>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Scan Activity</span>
+          <span class="card-badge" id="scanRate">--/min</span>
+        </div>
+        <div class="card-body scan-activity" id="scanActivity">
+          <div class="empty-state">
+            <div>Waiting for scans...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const API_URL = 'http://localhost:3000';
+    const WS_URL = 'ws://localhost:3001';
+
+    let ws = null;
+    let reconnectAttempts = 0;
+    let scanHistory = [];
+    let lastSignals = [];
+
+    // DOM Elements
+    const elements = {
+      connectionBanner: document.getElementById('connectionBanner'),
+      wsStatus: document.getElementById('wsStatus'),
+      wsStatusText: document.getElementById('wsStatusText'),
+      scanCount: document.getElementById('scanCount'),
+      totalScans: document.getElementById('totalScans'),
+      coinsTracked: document.getElementById('coinsTracked'),
+      avgScanTime: document.getElementById('avgScanTime'),
+      signalsFound: document.getElementById('signalsFound'),
+      signalsBody: document.getElementById('signalsBody'),
+      scanActivity: document.getElementById('scanActivity'),
+      scanRate: document.getElementById('scanRate'),
+      positionCount: document.getElementById('positionCount'),
+      positionsBody: document.getElementById('positionsBody'),
+      paperBalance: document.getElementById('paperBalance'),
+      totalEquity: document.getElementById('totalEquity'),
+      totalPnL: document.getElementById('totalPnL')
+    };
+
+    // Connect to WebSocket
+    function connect() {
+      elements.connectionBanner.className = 'connection-banner connecting';
+      elements.connectionBanner.textContent = 'Connecting to server...';
+      elements.wsStatus.className = 'status-dot';
+      elements.wsStatusText.textContent = 'Connecting...';
+
+      try {
+        ws = new WebSocket(WS_URL);
+      } catch (e) {
+        handleDisconnect();
+        return;
+      }
+
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+        reconnectAttempts = 0;
+        elements.connectionBanner.className = 'connection-banner';
+        elements.wsStatus.className = 'status-dot live';
+        elements.wsStatusText.textContent = 'Connected';
+
+        // Request initial data
+        fetchStatus();
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        handleDisconnect();
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleMessage(data);
+        } catch (e) {
+          console.error('Failed to parse message:', e);
+        }
+      };
+    }
+
+    function handleDisconnect() {
+      elements.connectionBanner.className = 'connection-banner disconnected';
+      elements.connectionBanner.textContent = `Disconnected. Reconnecting in ${Math.min(5 + reconnectAttempts * 2, 30)}s...`;
+      elements.wsStatus.className = 'status-dot offline';
+      elements.wsStatusText.textContent = 'Disconnected';
+
+      reconnectAttempts++;
+      setTimeout(connect, Math.min(5000 + reconnectAttempts * 2000, 30000));
+    }
+
+    let currentBalance = 10000; // Track balance globally
+
+    function handleMessage(data) {
+      if (data.type === 'update') {
+        updateSignals(data.signals || []);
+        updateStats(data.stats || {});
+        if (data.balance !== undefined) {
+          currentBalance = data.balance;
+          elements.paperBalance.textContent = '$' + currentBalance.toFixed(2);
+        }
+        updatePositions(data.positions, currentBalance);
+
+        // Record scan
+        if (data.stats && data.stats.totalScans) {
+          addScanRecord(data.stats);
+        }
+      }
+    }
+
+    function updateSignals(signals) {
+      // Filter signals with score >= 50
+      const filteredSignals = signals
+        .filter(s => Math.abs(s.score || s.regimeScore || 0) >= 50)
+        .sort((a, b) => Math.abs(b.score || b.regimeScore || 0) - Math.abs(a.score || a.regimeScore || 0))
+        .slice(0, 20);
+
+      elements.signalsFound.textContent = filteredSignals.length;
+
+      if (filteredSignals.length === 0) {
+        elements.signalsBody.innerHTML = `
+          <tr>
+            <td colspan="7">
+              <div class="empty-state">
+                <div class="empty-state-icon">📡</div>
+                <div>No signals above threshold</div>
+              </div>
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      const newSymbols = new Set(filteredSignals.map(s => s.symbol));
+      const oldSymbols = new Set(lastSignals.map(s => s.symbol));
+
+      elements.signalsBody.innerHTML = filteredSignals.map(signal => {
+        // Always use absolute values for scores
+        const rawScore = signal.score || 0;
+        const rawFinal = signal.finalScore || signal.regimeScore || rawScore;
+        const baseScore = Math.abs(rawScore);
+        const finalScore = Math.abs(rawFinal);
+        const direction = signal.direction || (rawScore >= 0 ? 'long' : 'short');
+        const scoreColor = direction === 'long' ? 'green' : 'red';
+        const baseClass = baseScore >= 80 ? 'high' : baseScore >= 60 ? 'medium' : 'low';
+        const finalClass = finalScore >= 100 ? 'high' : finalScore >= 70 ? 'medium' : 'low';
+        const isNew = !oldSymbols.has(signal.symbol);
+        const change = signal.change24h || 0;
+        const quality = signal.signalQuality || 'D';
+        const aligned = signal.alignedTFs || 1;
+        const total = signal.totalTFs || 1;
+        const qualityClass = quality === 'A' ? 'high' : quality === 'B' ? 'medium' : 'low';
+
+        return `
+          <tr class="${isNew ? 'new-signal' : ''}">
+            <td>
+              <div class="symbol-cell">
+                <div class="symbol-icon">${signal.symbol.slice(0, 2)}</div>
+                <div>
+                  <div class="symbol-name">${signal.symbol.replace('USDTM', '')}</div>
+                  <div class="symbol-pair">USDT Perp</div>
+                </div>
+              </div>
+            </td>
+            <td>
+              <span class="direction-badge ${direction}">
+                ${direction === 'long' ? '↑' : '↓'} ${direction}
+              </span>
+            </td>
+            <td>
+              <span class="score-value ${baseClass} ${scoreColor}">${baseScore}</span>
+            </td>
+            <td>
+              <span class="score-value ${finalClass} ${scoreColor}" style="font-weight:700">${finalScore}</span>
+            </td>
+            <td>
+              <span class="quality-badge ${qualityClass}">[${quality}] ${aligned}/${total}</span>
+            </td>
+            <td class="price-cell">$${formatPrice(signal.currentPrice)}</td>
+            <td class="${change >= 0 ? 'change-positive' : 'change-negative'}">
+              ${change >= 0 ? '+' : ''}${change.toFixed(1)}%
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      lastSignals = filteredSignals;
+    }
+
+    function updateStats(stats) {
+      elements.scanCount.textContent = stats.totalScans || 0;
+      elements.totalScans.textContent = stats.totalScans || 0;
+      elements.avgScanTime.textContent = (stats.avgScanDuration || 0) + 'ms';
+    }
+
+    function updatePositions(positions, balance) {
+      const positionsObj = positions || {};
+      const positionsList = Object.values(positionsObj);
+
+      elements.positionCount.textContent = `${positionsList.length} position${positionsList.length !== 1 ? 's' : ''}`;
+
+      // Calculate total unrealized P&L
+      let totalUnrealizedPnL = 0;
+      positionsList.forEach(pos => {
+        totalUnrealizedPnL += pos.unrealizedPnL || 0;
+      });
+
+      // Update total equity display
+      const currentBalance = balance || 10000;
+      const totalEquity = currentBalance + totalUnrealizedPnL;
+      elements.totalEquity.textContent = '$' + totalEquity.toFixed(2);
+      elements.totalEquity.className = 'stat-value ' + (totalUnrealizedPnL >= 0 ? 'green' : 'red');
+      elements.totalPnL.textContent = (totalUnrealizedPnL >= 0 ? '+' : '') + '$' + totalUnrealizedPnL.toFixed(2);
+      elements.totalPnL.className = 'stat-change ' + (totalUnrealizedPnL >= 0 ? 'change-positive' : 'change-negative');
+
+      if (positionsList.length === 0) {
+        elements.positionsBody.innerHTML = `
+          <tr><td colspan="9">
+            <div class="empty-state">No open positions</div>
+          </td></tr>`;
+        return;
+      }
+
+      // Render positions with all details
+      elements.positionsBody.innerHTML = positionsList.map(pos => {
+        const pnl = pos.unrealizedPnL || 0;
+        const pnlPct = pos.unrealizedPnLPercent || 0;
+        const pnlClass = pnl >= 0 ? 'change-positive' : 'change-negative';
+        const leverage = pos.leverage || 20;
+        const stopLoss = pos.stopLoss || pos.currentStopLoss || 0;
+        const takeProfit = pos.takeProfit || 0;
+        const isTrailing = pos.trailingActivated || false;
+        const isBreakEven = pos.breakEvenActivated || false;
+        const slLabel = isTrailing ? 'T' : (isBreakEven ? 'BE' : '');
+
+        return `<tr>
+          <td><div class="symbol-name">${pos.symbol.replace('USDTM', '')}</div></td>
+          <td><span class="direction-badge ${pos.direction}">${pos.direction === 'long' ? '↑' : '↓'}</span></td>
+          <td>${leverage}x</td>
+          <td>$${(pos.size || 0).toFixed(0)}</td>
+          <td>$${formatPrice(pos.entryPrice)}</td>
+          <td>$${formatPrice(pos.currentPrice || pos.entryPrice)}</td>
+          <td class="${stopLoss > 0 ? 'change-negative' : ''}" title="${slLabel ? slLabel + ' active' : 'Stop Loss'}">
+            ${stopLoss > 0 ? '$' + formatPrice(stopLoss) : '-'}${slLabel ? ' ' + slLabel : ''}
+          </td>
+          <td class="change-positive">${takeProfit > 0 ? '$' + formatPrice(takeProfit) : '-'}</td>
+          <td class="${pnlClass}">
+            ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    function addScanRecord(stats) {
+      const now = new Date();
+      const record = {
+        number: stats.totalScans,
+        time: now.toLocaleTimeString(),
+        duration: stats.avgScanDuration || 0,
+        symbols: 35
+      };
+
+      scanHistory.unshift(record);
+      if (scanHistory.length > 50) scanHistory.pop();
+
+      // Calculate scan rate
+      const oneMinuteAgo = Date.now() - 60000;
+      const recentScans = scanHistory.filter((s, i) => i < 12).length;
+      elements.scanRate.textContent = `~${recentScans}/min`;
+
+      renderScanActivity();
+    }
+
+    function renderScanActivity() {
+      if (scanHistory.length === 0) {
+        elements.scanActivity.innerHTML = '<div class="empty-state"><div>Waiting for scans...</div></div>';
+        return;
+      }
+
+      elements.scanActivity.innerHTML = scanHistory.slice(0, 20).map(scan => `
+        <div class="scan-item">
+          <span class="scan-number">#${scan.number}</span>
+          <span>${scan.symbols} coins scanned</span>
+          <span class="scan-time">${scan.time}</span>
+          <span class="scan-duration">${scan.duration}ms</span>
+        </div>
+      `).join('');
+    }
+
+    function formatPrice(price) {
+      if (!price) return '0.0000';
+      if (price >= 1000) return price.toFixed(2);
+      if (price >= 1) return price.toFixed(4);
+      return price.toFixed(6);
+    }
+
+    function getRegimeClass(regime) {
+      if (regime.includes('trend_up')) return 'trend-up';
+      if (regime.includes('trend_down')) return 'trend-down';
+      if (regime.includes('ranging')) return 'ranging';
+      if (regime.includes('volatil')) return 'volatile';
+      if (regime.includes('breakout')) return 'breakout';
+      return 'ranging';
+    }
+
+    function formatRegime(regime) {
+      return regime.replace(/_/g, ' ').replace('strong ', '').slice(0, 10);
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch(API_URL + '/status');
+        const data = await res.json();
+
+        if (data.signals) {
+          updateSignals(data.signals);
+        }
+
+        if (data.balance !== undefined) {
+          currentBalance = data.balance;
+          elements.paperBalance.textContent = '$' + currentBalance.toFixed(2);
+        }
+
+        if (data.positions) {
+          updatePositions(data.positions, currentBalance);
+        }
+
+        elements.coinsTracked.textContent = Object.keys(data.positions || {}).length || 35;
+
+      } catch (e) {
+        console.error('Failed to fetch status:', e);
+      }
+    }
+
+    // Poll for updates (backup if WebSocket fails)
+    async function pollUpdates() {
+      try {
+        const res = await fetch(API_URL + '/signals?limit=30');
+        const data = await res.json();
+        if (data.signals) {
+          updateSignals(data.signals);
+        }
+      } catch (e) {
+        // Silent fail
+      }
+    }
+
+    // Timeframe switching
+    async function setTimeframe(timeframe) {
+      const select = document.getElementById('timeframeSelect');
+      const originalValue = select.value;
+
+      try {
+        const res = await fetch(API_URL + '/timeframe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ timeframe })
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+          console.log(`Timeframe changed: ${data.previous} → ${data.current}`);
+          // Clear current signals while re-scanning
+          lastSignals = [];
+          scanHistory = [];
+          elements.signalsBody.innerHTML = `
+            <tr>
+              <td colspan="6">
+                <div class="empty-state">
+                  <div class="empty-state-icon">🔄</div>
+                  <div>Switching to ${timeframe} timeframe...</div>
+                </div>
+              </td>
+            </tr>
+          `;
+          elements.scanActivity.innerHTML = '<div class="empty-state"><div>Re-scanning...</div></div>';
+        } else {
+          console.error('Failed to set timeframe:', data.error);
+          select.value = originalValue;
+          alert('Failed to change timeframe: ' + (data.error || 'Unknown error'));
+        }
+      } catch (e) {
+        console.error('Failed to set timeframe:', e);
+        select.value = originalValue;
+        alert('Failed to change timeframe: Connection error');
+      }
+    }
+
+    // Load current timeframe from server
+    async function loadTimeframe() {
+      try {
+        const res = await fetch(API_URL + '/timeframes');
+        const data = await res.json();
+        if (data.active) {
+          document.getElementById('timeframeSelect').value = data.active;
+        }
+      } catch (e) {
+        console.error('Failed to load timeframe:', e);
+      }
+    }
+
+    // Initialize
+    connect();
+    loadTimeframe();
+    setInterval(fetchStatus, 2000);  // Refresh every 2 seconds
+    setInterval(pollUpdates, 2000);  // Backup polling every 2 seconds
+
+    // Update coins tracked from /metrics
+    async function fetchMetrics() {
+      try {
+        const res = await fetch(API_URL + '/metrics');
+        const data = await res.json();
+        if (data.screener) {
+          elements.totalScans.textContent = data.screener.totalScans || 0;
+          elements.scanCount.textContent = data.screener.totalScans || 0;
+          elements.avgScanTime.textContent = (data.screener.avgScanDuration || 0) + 'ms';
+
+          addScanRecord(data.screener);
+        }
+      } catch (e) {
+        // Silent fail
+      }
+    }
+
+    setInterval(fetchMetrics, 5000);
+    fetchMetrics();
+  </script>
+</body>
+</html>

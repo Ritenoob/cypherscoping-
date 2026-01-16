@@ -1,0 +1,41 @@
+{
+  "enabled": [
+    "BTCUSDTM",
+    "ETHUSDTM",
+    "SOLUSDTM",
+    "XRPUSDTM",
+    "BNBUSDTM",
+    "DOTUSDTM",
+    "AVAXUSDTM",
+    "LINKUSDTM",
+    "MATICUSDTM",
+    "ADAUSDTM"
+  ],
+  "tier1": [
+    "BTCUSDTM",
+    "ETHUSDTM"
+  ],
+  "tier2": [
+    "SOLUSDTM",
+    "XRPUSDTM",
+    "BNBUSDTM"
+  ],
+  "tier3": [
+    "DOTUSDTM",
+    "AVAXUSDTM",
+    "LINKUSDTM",
+    "MATICUSDTM",
+    "ADAUSDTM"
+  ],
+  "blacklist": [
+    "LUNAUSDTM",
+    "USTUSDTM"
+  ],
+  "preferredTimeframes": {
+    "primary": "15min",
+    "secondary": "1hour",
+    "scalping": "5min"
+  },
+  "minVolume24h": 10000000,
+  "maxSpreadPercent": 0.05
+}

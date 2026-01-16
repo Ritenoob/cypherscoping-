@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KuCoin Futures Trading Bot Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 100%);
+      color: #e4e4e4;
+      min-height: 100vh;
+    }
+    
+    .container {
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 0;
+      border-bottom: 1px solid #2a2a4a;
+      margin-bottom: 30px;
+    }
+    
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+    
+    .logo h1 {
+      font-size: 1.8rem;
+      background: linear-gradient(90deg, #00ff88, #00d4ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .status-badge {
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    
+    .status-badge.connected {
+      background: rgba(0, 255, 136, 0.15);
+      color: #00ff88;
+      border: 1px solid #00ff88;
+    }
+    
+    .status-badge.disconnected {
+      background: rgba(255, 71, 87, 0.15);
+      color: #ff4757;
+      border: 1px solid #ff4757;
+    }
+    
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+      gap: 20px;
+    }
+    
+    .card {
+      background: rgba(26, 26, 46, 0.8);
+      border-radius: 16px;
+      padding: 24px;
+      border: 1px solid #2a2a4a;
+      backdrop-filter: blur(10px);
+    }
+    
+    .card h2 {
+      font-size: 1.1rem;
+      color: #888;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .card h2::before {
+      content: '';
+      width: 4px;
+      height: 20px;
+      background: linear-gradient(180deg, #00ff88, #00d4ff);
+      border-radius: 2px;
+    }
+    
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    
+    .stat-row:last-child {
+      border-bottom: none;
+    }
+    
+    .stat-label {
+      color: #888;
+    }
+    
+    .stat-value {
+      font-weight: 600;
+      color: #fff;
+    }
+    
+    .stat-value.positive { color: #00ff88; }
+    .stat-value.negative { color: #ff4757; }
+    .stat-value.neutral { color: #ffa502; }
+    
+    .signal-list {
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    
+    .signal-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px;
+      background: rgba(42, 42, 74, 0.5);
+      border-radius: 10px;
+      margin-bottom: 10px;
+    }
+    
+    .signal-symbol {
+      font-weight: 700;
+      font-size: 1rem;
+    }
+    
+    .signal-direction {
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    
+    .signal-direction.long {
+      background: rgba(0, 255, 136, 0.15);
+      color: #00ff88;
+    }
+    
+    .signal-direction.short {
+      background: rgba(255, 71, 87, 0.15);
+      color: #ff4757;
+    }
+    
+    .signal-meta {
+      text-align: right;
+    }
+    
+    .signal-score {
+      font-size: 1.2rem;
+      font-weight: 700;
+    }
+    
+    .signal-confidence {
+      font-size: 0.8rem;
+      color: #888;
+    }
+    
+    .coin-list {
+      max-height: 350px;
+      overflow-y: auto;
+    }
+    
+    .coin-item {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      padding: 12px;
+      border-bottom: 1px solid #2a2a4a;
+      gap: 10px;
+    }
+    
+    .coin-item:hover {
+      background: rgba(42, 42, 74, 0.5);
+    }
+    
+    .coin-symbol {
+      font-weight: 600;
+    }
+    
+    .coin-volume {
+      text-align: center;
+      color: #888;
+    }
+    
+    .coin-change {
+      text-align: right;
+    }
+    
+    .microstructure-widget {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 15px;
+    }
+    
+    .micro-item {
+      background: rgba(42, 42, 74, 0.5);
+      padding: 16px;
+      border-radius: 10px;
+      text-align: center;
+    }
+    
+    .micro-label {
+      font-size: 0.85rem;
+      color: #888;
+      margin-bottom: 8px;
+    }
+    
+    .micro-value {
+      font-size: 1.4rem;
+      font-weight: 700;
+    }
+    
+    .indicator-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    
+    .indicator-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px;
+      background: rgba(42, 42, 74, 0.3);
+      border-radius: 8px;
+    }
+    
+    .indicator-name {
+      font-size: 0.9rem;
+      color: #888;
+    }
+    
+    .indicator-signal {
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    
+    .score-meter {
+      width: 100%;
+      height: 30px;
+      background: linear-gradient(90deg, #ff4757 0%, #ffa502 50%, #00ff88 100%);
+      border-radius: 15px;
+      position: relative;
+      margin: 20px 0;
+    }
+    
+    .score-indicator {
+      position: absolute;
+      top: -5px;
+      width: 20px;
+      height: 40px;
+      background: #fff;
+      border-radius: 10px;
+      transform: translateX(-50%);
+      box-shadow: 0 0 10px rgba(255,255,255,0.5);
+    }
+    
+    .score-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      color: #666;
+    }
+    
+    .paper-results {
+      margin-top: 20px;
+    }
+    
+    .paper-stat {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+    }
+    
+    .refresh-btn {
+      background: linear-gradient(90deg, #00ff88, #00d4ff);
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      color: #000;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    
+    .refresh-btn:hover {
+      transform: scale(1.05);
+    }
+    
+    .timestamp {
+      font-size: 0.8rem;
+      color: #666;
+      text-align: right;
+      margin-top: 10px;
+    }
+    
+    @media (max-width: 768px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .microstructure-widget {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <h1>KuCoin Futures Bot</h1>
+      </div>
+      <div id="connection-status" class="status-badge disconnected">
+        Disconnected
+      </div>
+    </header>
+    
+    <div class="grid">
+      <!-- System Status Card -->
+      <div class="card">
+        <h2>System Status</h2>
+        <div id="status-content">
+          <div class="stat-row">
+            <span class="stat-label">Uptime</span>
+            <span class="stat-value" id="uptime">--</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Signals Generated</span>
+            <span class="stat-value" id="signals-count">0</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Coins Tracked</span>
+            <span class="stat-value" id="coins-count">0</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Microstructure Mode</span>
+            <span class="stat-value" id="micro-mode">Paper</span>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Latest Signals Card -->
+      <div class="card">
+        <h2>Latest Signals</h2>
+        <div id="signals-list" class="signal-list">
+          <p style="color: #666; text-align: center; padding: 40px;">
+            Waiting for signals...
+          </p>
+        </div>
+      </div>
+      
+      <!-- Coin Rankings Card -->
+      <div class="card">
+        <h2>Top Coins by Volume</h2>
+        <div id="coins-list" class="coin-list">
+          <div class="coin-item" style="font-weight: 600; color: #888;">
+            <span>Symbol</span>
+            <span>24h Volume</span>
+            <span>Change</span>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Microstructure Analysis Card -->
+      <div class="card">
+        <h2>Microstructure Analysis</h2>
+        <div id="microstructure" class="microstructure-widget">
+          <div class="micro-item">
+            <div class="micro-label">Buy/Sell Ratio</div>
+            <div class="micro-value neutral" id="buy-sell-ratio">--</div>
+          </div>
+          <div class="micro-item">
+            <div class="micro-label">Funding Rate</div>
+            <div class="micro-value neutral" id="funding-rate">--</div>
+          </div>
+          <div class="micro-item">
+            <div class="micro-label">Basis (Premium)</div>
+            <div class="micro-value neutral" id="basis">--</div>
+          </div>
+        </div>
+        <p style="font-size: 0.8rem; color: #666; margin-top: 15px; text-align: center;">
+          * Microstructure data only available in live mode
+        </p>
+      </div>
+      
+      <!-- Signal Strength Meter -->
+      <div class="card">
+        <h2>Current Signal Strength</h2>
+        <div class="score-meter">
+          <div class="score-indicator" id="score-indicator" style="left: 50%;"></div>
+        </div>
+        <div class="score-labels">
+          <span>-130 (Strong Sell)</span>
+          <span>0 (Neutral)</span>
+          <span>+130 (Strong Buy)</span>
+        </div>
+        <div id="signal-breakdown" class="indicator-grid" style="margin-top: 20px;">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+      
+      <!-- Paper Trading Results -->
+      <div class="card">
+        <h2>Paper Trading Performance</h2>
+        <div id="paper-trading">
+          <div class="paper-stat">
+            <span class="stat-label">Win Rate</span>
+            <span class="stat-value" id="win-rate">--</span>
+          </div>
+          <div class="paper-stat">
+            <span class="stat-label">Profit Factor</span>
+            <span class="stat-value" id="profit-factor">--</span>
+          </div>
+          <div class="paper-stat">
+            <span class="stat-label">Sharpe Ratio</span>
+            <span class="stat-value" id="sharpe-ratio">--</span>
+          </div>
+          <div class="paper-stat">
+            <span class="stat-label">Max Drawdown</span>
+            <span class="stat-value" id="max-drawdown">--</span>
+          </div>
+          <div class="paper-stat">
+            <span class="stat-label">Total Return</span>
+            <span class="stat-value" id="total-return">--</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <div style="text-align: center; margin-top: 30px;">
+      <button class="refresh-btn" onclick="refreshAll()">Refresh Data</button>
+    </div>
+    
+    <div class="timestamp">
+      Last updated: <span id="last-update">--</span>
+    </div>
+  </div>
+  
+  <script>
+    const API_BASE = window.location.origin;
+    
+    async function fetchStatus() {
+      try {
+        const res = await fetch(`${API_BASE}/api/status`);
+        const data = await res.json();
+        
+        document.getElementById('connection-status').className = 'status-badge connected';
+        document.getElementById('connection-status').textContent = 'Connected';
+        
+        const hours = Math.floor(data.uptime / 3600);
+        const minutes = Math.floor((data.uptime % 3600) / 60);
+        document.getElementById('uptime').textContent = `${hours}h ${minutes}m`;
+        
+        document.getElementById('signals-count').textContent = data.signalsGenerated;
+        document.getElementById('coins-count').textContent = data.coinsTracked;
+        document.getElementById('micro-mode').textContent = data.microstructureLive ? 'Live' : 'Paper';
+        document.getElementById('micro-mode').className = `stat-value ${data.microstructureLive ? 'positive' : 'neutral'}`;
+      } catch (err) {
+        document.getElementById('connection-status').className = 'status-badge disconnected';
+        document.getElementById('connection-status').textContent = 'Disconnected';
+      }
+    }
+    
+    async function fetchSignals() {
+      try {
+        const res = await fetch(`${API_BASE}/api/signals`);
+        const data = await res.json();
+        
+        const container = document.getElementById('signals-list');
+        
+        if (!data.signals || data.signals.length === 0) {
+          container.innerHTML = '<p style="color: #666; text-align: center; padding: 40px;">Waiting for signals...</p>';
+          return;
+        }
+        
+        container.innerHTML = data.signals.slice(0, 10).map(signal => {
+          const scoreClass = signal.score > 0 ? 'positive' : signal.score < 0 ? 'negative' : 'neutral';
+          const dirClass = signal.direction === 'long' ? 'long' : 'short';
+          const time = new Date(signal.receivedAt).toLocaleTimeString();
+          
+          return `
+            <div class="signal-item">
+              <div>
+                <div class="signal-symbol">${signal.symbol}</div>
+                <div style="font-size: 0.8rem; color: #666;">${time}</div>
+              </div>
+              <div class="signal-direction ${dirClass}">${signal.direction.toUpperCase()}</div>
+              <div class="signal-meta">
+                <div class="signal-score ${scoreClass}">${signal.score > 0 ? '+' : ''}${signal.score}</div>
+                <div class="signal-confidence">${signal.confidence}% confidence</div>
+              </div>
+            </div>
+          `;
+        }).join('');
+        
+        // Update score meter
+        if (data.signals.length > 0) {
+          const latestScore = data.signals[0].score;
+          const percentage = ((latestScore + 130) / 260) * 100;
+          document.getElementById('score-indicator').style.left = `${percentage}%`;
+        }
+      } catch (err) {
+        console.error('Failed to fetch signals:', err);
+      }
+    }
+    
+    async function fetchCoins() {
+      try {
+        const res = await fetch(`${API_BASE}/api/coins`);
+        const data = await res.json();
+        
+        const container = document.getElementById('coins-list');
+        const header = '<div class="coin-item" style="font-weight: 600; color: #888;"><span>Symbol</span><span>24h Volume</span><span>Change</span></div>';
+        
+        const items = data.coins.slice(0, 15).map(coin => {
+          const changeClass = coin.priceChangePercent > 0 ? 'positive' : coin.priceChangePercent < 0 ? 'negative' : 'neutral';
+          const volumeStr = coin.turnover24h >= 1e9 
+            ? `$${(coin.turnover24h / 1e9).toFixed(2)}B`
+            : `$${(coin.turnover24h / 1e6).toFixed(2)}M`;
+          
+          return `
+            <div class="coin-item">
+              <span class="coin-symbol">${coin.baseCurrency}</span>
+              <span class="coin-volume">${volumeStr}</span>
+              <span class="coin-change ${changeClass}">${coin.priceChangePercent > 0 ? '+' : ''}${coin.priceChangePercent.toFixed(2)}%</span>
+            </div>
+          `;
+        }).join('');
+        
+        container.innerHTML = header + items;
+      } catch (err) {
+        console.error('Failed to fetch coins:', err);
+      }
+    }
+    
+    async function fetchMicrostructure() {
+      try {
+        const res = await fetch(`${API_BASE}/api/microstructure`);
+        const data = await res.json();
+        
+        // Buy/Sell Ratio
+        if (data.buySellRatio && data.buySellRatio.value) {
+          const ratio = data.buySellRatio.value.ratio5m || data.buySellRatio.value.ratio1m || 0.5;
+          const ratioClass = ratio > 0.55 ? 'positive' : ratio < 0.45 ? 'negative' : 'neutral';
+          document.getElementById('buy-sell-ratio').textContent = (ratio * 100).toFixed(1) + '%';
+          document.getElementById('buy-sell-ratio').className = `micro-value ${ratioClass}`;
+        }
+        
+        // Funding Rate
+        if (data.fundingRate && data.fundingRate.value) {
+          const rate = data.fundingRate.value.currentRate || 0;
+          const rateClass = rate > 0.0005 ? 'positive' : rate < -0.0005 ? 'negative' : 'neutral';
+          document.getElementById('funding-rate').textContent = (rate * 100).toFixed(4) + '%';
+          document.getElementById('funding-rate').className = `micro-value ${rateClass}`;
+        }
+        
+        // Basis
+        if (data.priceRatio && data.priceRatio.value) {
+          const basis = data.priceRatio.value.basis || 0;
+          const basisClass = basis > 0.05 ? 'positive' : basis < -0.05 ? 'negative' : 'neutral';
+          document.getElementById('basis').textContent = (basis * 100).toFixed(3) + '%';
+          document.getElementById('basis').className = `micro-value ${basisClass}`;
+        }
+      } catch (err) {
+        console.error('Failed to fetch microstructure:', err);
+      }
+    }
+    
+    async function fetchPaperTrading() {
+      try {
+        const res = await fetch(`${API_BASE}/api/paper-trading`);
+        const data = await res.json();
+        
+        if (data.best && data.best.metrics) {
+          const m = data.best.metrics;
+          
+          document.getElementById('win-rate').textContent = m.winRate + '%';
+          document.getElementById('win-rate').className = `stat-value ${parseFloat(m.winRate) > 50 ? 'positive' : 'negative'}`;
+          
+          document.getElementById('profit-factor').textContent = m.profitFactor;
+          document.getElementById('profit-factor').className = `stat-value ${parseFloat(m.profitFactor) > 1 ? 'positive' : 'negative'}`;
+          
+          document.getElementById('sharpe-ratio').textContent = m.sharpeRatio;
+          document.getElementById('sharpe-ratio').className = `stat-value ${parseFloat(m.sharpeRatio) > 1 ? 'positive' : 'negative'}`;
+          
+          document.getElementById('max-drawdown').textContent = m.maxDrawdown + '%';
+          document.getElementById('max-drawdown').className = `stat-value ${parseFloat(m.maxDrawdown) < 15 ? 'positive' : 'negative'}`;
+          
+          document.getElementById('total-return').textContent = m.totalReturn + '%';
+          document.getElementById('total-return').className = `stat-value ${parseFloat(m.totalReturn) > 0 ? 'positive' : 'negative'}`;
+        }
+      } catch (err) {
+        console.error('Failed to fetch paper trading:', err);
+      }
+    }
+    
+    function refreshAll() {
+      fetchStatus();
+      fetchSignals();
+      fetchCoins();
+      fetchMicrostructure();
+      fetchPaperTrading();
+      document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+    }
+    
+    // Initial load
+    refreshAll();
+    
+    // Auto-refresh every 5 seconds
+    setInterval(refreshAll, 5000);
+  </script>
+</body>
+</html>

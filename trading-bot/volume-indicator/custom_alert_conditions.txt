@@ -1,0 +1,566 @@
+//+------------------------------------------------------------------+
+//|                          CustomAlertConditions.mq5               |
+//|                   Advanced Customizable Alert System              |
+//|              Create Your Own Multi-Condition Alerts               |
+//+------------------------------------------------------------------+
+#property copyright "Custom Alert Conditions System"
+#property version   "1.00"
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots 0
+
+//--- Input parameters
+input group "=== Alert Rule #1 ==="
+input bool     InpRule1_Enable = true;         // Enable Rule 1
+input string   InpRule1_Name = "Strong Buy Setup"; // Rule Name
+input bool     InpRule1_RequireVolume = true;  // Require Volume Spike
+input double   InpRule1_VolumeMin = 2.0;       // Min Volume Multiple
+input bool     InpRule1_RequireOrderBook = true; // Require Order Book Imbalance
+input double   InpRule1_OBMin = 65.0;          // Min Imbalance %
+input bool     InpRule1_RequireStrength = true;// Require Signal Strength
+input int      InpRule1_StrengthMin = 70;      // Min Strength
+input bool     InpRule1_RequireMTF = true;     // Require MTF Alignment
+input int      InpRule1_MTFMin = 3;            // Min Bullish Timeframes
+input bool     InpRule1_RequireSupport = false;// Require Nearby Support
+input int      InpRule1_SupportDist = 20;      // Support Distance (pips)
+
+input group "=== Alert Rule #2 ==="
+input bool     InpRule2_Enable = true;         // Enable Rule 2
+input string   InpRule2_Name = "Pump Warning"; // Rule Name
+input bool     InpRule2_RequireVolume = true;  // Require Volume Spike
+input double   InpRule2_VolumeMin = 3.0;       // Min Volume Multiple
+input bool     InpRule2_RequireATR = true;     // Require ATR Expansion
+input double   InpRule2_ATRMin = 1.8;          // Min ATR Multiple
+input bool     InpRule2_RequireRisk = true;    // Require High Risk Level
+input int      InpRule2_RiskMin = 4;           // Min Risk Level
+input bool     InpRule2_RequireFakeWall = false; // Require Fake Wall Detection
+input bool     InpRule2_RequireDivergence = true; // Require MTF Divergence
+
+input group "=== Alert Rule #3 ==="
+input bool     InpRule3_Enable = false;        // Enable Rule 3
+input string   InpRule3_Name = "Reversal Setup"; // Rule Name
+input bool     InpRule3_RequireResistance = true; // Require Resistance Touch
+input int      InpRule3_ResistDist = 10;       // Resistance Distance (pips)
+input bool     InpRule3_RequireBearishMTF = true; // Require Bearish MTF
+input int      InpRule3_BearishMin = 3;        // Min Bearish Timeframes
+input bool     InpRule3_RequireVolume = true;  // Require Volume
+input double   InpRule3_VolumeMin = 1.5;       // Min Volume Multiple
+
+input group "=== Alert Settings ==="
+input bool     InpEnableSoundAlerts = true;    // Enable Sound Alerts
+input string   InpRule1_Sound = "alert.wav";   // Rule 1 Sound
+input string   InpRule2_Sound = "alert2.wav";  // Rule 2 Sound
+input string   InpRule3_Sound = "stops.wav";   // Rule 3 Sound
+input bool     InpEnablePopupAlerts = true;    // Enable Popup Alerts
+input bool     InpEnablePushAlerts = false;    // Enable Push Notifications
+input int      InpAlertCooldown = 180;         // Alert Cooldown (seconds)
+input bool     InpShowAlertPanel = true;       // Show Alert Panel
+
+input group "=== Advanced Logic ==="
+input bool     InpUseANDLogic = true;          // Use AND (all conditions)
+input bool     InpCheckPriceAction = false;    // Check Price Action Patterns
+input bool     InpCheckCandlePatterns = false; // Check Candle Patterns
+input bool     InpTimeFilter = false;          // Enable Time Filter
+input int      InpStartHour = 8;               // Start Hour
+input int      InpEndHour = 20;                // End Hour
+
+//--- Structures
+struct AlertRule
+{
+   bool enabled;
+   string name;
+   bool requireVolume;
+   double volumeMin;
+   bool requireOrderBook;
+   double obMin;
+   bool requireStrength;
+   int strengthMin;
+   bool requireMTF;
+   int mtfMin;
+   bool requireSupport;
+   int supportDist;
+   bool requireResistance;
+   int resistDist;
+   bool requireATR;
+   double atrMin;
+   bool requireRisk;
+   int riskMin;
+   bool requireFakeWall;
+   bool requireDivergence;
+   bool requireBearishMTF;
+   int bearishMin;
+   string soundFile;
+   datetime lastAlert;
+   int triggeredCount;
+};
+
+struct MarketConditions
+{
+   double volumeRatio;
+   double orderBookImbalance;
+   int signalStrength;
+   int bullishTF;
+   int bearishTF;
+   double atrRatio;
+   int riskLevel;
+   bool fakeWallDetected;
+   bool mtfDivergence;
+   double nearestSupport;
+   double nearestResistance;
+   double currentPrice;
+};
+
+//--- Global variables
+string objPrefix = "CustomAlert_";
+AlertRule rules[3];
+MarketConditions currentConditions;
+datetime lastCheck = 0;
+int alertsPanelY = 50;
+
+//+------------------------------------------------------------------+
+//| Custom indicator initialization                                  |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   Print("=== Custom Alert Conditions System Initialization ===");
+   
+   //--- Initialize Rule 1
+   rules[0].enabled = InpRule1_Enable;
+   rules[0].name = InpRule1_Name;
+   rules[0].requireVolume = InpRule1_RequireVolume;
+   rules[0].volumeMin = InpRule1_VolumeMin;
+   rules[0].requireOrderBook = InpRule1_RequireOrderBook;
+   rules[0].obMin = InpRule1_OBMin;
+   rules[0].requireStrength = InpRule1_RequireStrength;
+   rules[0].strengthMin = InpRule1_StrengthMin;
+   rules[0].requireMTF = InpRule1_RequireMTF;
+   rules[0].mtfMin = InpRule1_MTFMin;
+   rules[0].requireSupport = InpRule1_RequireSupport;
+   rules[0].supportDist = InpRule1_SupportDist;
+   rules[0].soundFile = InpRule1_Sound;
+   rules[0].lastAlert = 0;
+   rules[0].triggeredCount = 0;
+   
+   //--- Initialize Rule 2
+   rules[1].enabled = InpRule2_Enable;
+   rules[1].name = InpRule2_Name;
+   rules[1].requireVolume = InpRule2_RequireVolume;
+   rules[1].volumeMin = InpRule2_VolumeMin;
+   rules[1].requireATR = InpRule2_RequireATR;
+   rules[1].atrMin = InpRule2_ATRMin;
+   rules[1].requireRisk = InpRule2_RequireRisk;
+   rules[1].riskMin = InpRule2_RiskMin;
+   rules[1].requireFakeWall = InpRule2_RequireFakeWall;
+   rules[1].requireDivergence = InpRule2_RequireDivergence;
+   rules[1].soundFile = InpRule2_Sound;
+   rules[1].lastAlert = 0;
+   rules[1].triggeredCount = 0;
+   
+   //--- Initialize Rule 3
+   rules[2].enabled = InpRule3_Enable;
+   rules[2].name = InpRule3_Name;
+   rules[2].requireResistance = InpRule3_RequireResistance;
+   rules[2].resistDist = InpRule3_ResistDist;
+   rules[2].requireBearishMTF = InpRule3_RequireBearishMTF;
+   rules[2].bearishMin = InpRule3_BearishMin;
+   rules[2].requireVolume = InpRule3_RequireVolume;
+   rules[2].volumeMin = InpRule3_VolumeMin;
+   rules[2].soundFile = InpRule3_Sound;
+   rules[2].lastAlert = 0;
+   rules[2].triggeredCount = 0;
+   
+   //--- Create alert panel
+   if(InpShowAlertPanel)
+      CreateAlertPanel();
+   
+   //--- Set timer
+   EventSetTimer(5); // Check every 5 seconds
+   
+   Print("✓ Custom Alert System Ready - ", CountEnabledRules(), " rules active");
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator deinitialization                                |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   ObjectsDeleteAll(0, objPrefix);
+   EventKillTimer();
+   
+   Print("Custom Alert Conditions deinitialized");
+   Print("Alert Summary:");
+   for(int i = 0; i < 3; i++)
+   {
+      if(rules[i].enabled)
+         Print("  ", rules[i].name, ": ", rules[i].triggeredCount, " alerts");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Timer function                                                    |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   //--- Time filter check
+   if(InpTimeFilter)
+   {
+      MqlDateTime dt;
+      TimeCurrent(dt);
+      if(dt.hour < InpStartHour || dt.hour >= InpEndHour)
+         return;
+   }
+   
+   //--- Check each rule
+   for(int i = 0; i < 3; i++)
+   {
+      if(!rules[i].enabled)
+         continue;
+      
+      //--- Cooldown check
+      if(TimeCurrent() - rules[i].lastAlert < InpAlertCooldown)
+         continue;
+      
+      //--- Evaluate rule
+      if(EvaluateRule(i))
+      {
+         TriggerAlert(i);
+         rules[i].lastAlert = TimeCurrent();
+         rules[i].triggeredCount++;
+      }
+   }
+   
+   //--- Update panel
+   if(InpShowAlertPanel)
+      UpdateAlertPanel();
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator iteration                                       |
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+{
+   return(rates_total);
+}
+
+//+------------------------------------------------------------------+
+//| Update Market Conditions (call from unified system)              |
+//+------------------------------------------------------------------+
+void UpdateConditions(double volRatio, double obImbalance, int strength, 
+                      int bullishTF, int bearishTF, double atrRatio, 
+                      int risk, bool fakeWall, bool mtfDiv,
+                      double nearSupport, double nearResist)
+{
+   currentConditions.volumeRatio = volRatio;
+   currentConditions.orderBookImbalance = obImbalance;
+   currentConditions.signalStrength = strength;
+   currentConditions.bullishTF = bullishTF;
+   currentConditions.bearishTF = bearishTF;
+   currentConditions.atrRatio = atrRatio;
+   currentConditions.riskLevel = risk;
+   currentConditions.fakeWallDetected = fakeWall;
+   currentConditions.mtfDivergence = mtfDiv;
+   currentConditions.nearestSupport = nearSupport;
+   currentConditions.nearestResistance = nearResist;
+   currentConditions.currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+}
+
+//+------------------------------------------------------------------+
+//| Evaluate Rule Conditions                                         |
+//+------------------------------------------------------------------+
+bool EvaluateRule(int ruleIndex)
+{
+   AlertRule rule = rules[ruleIndex];
+   int conditionsMet = 0;
+   int conditionsRequired = 0;
+   
+   //--- Check volume condition
+   if(rule.requireVolume)
+   {
+      conditionsRequired++;
+      if(currentConditions.volumeRatio >= rule.volumeMin)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false; // AND logic - fail fast
+   }
+   
+   //--- Check order book condition
+   if(rule.requireOrderBook)
+   {
+      conditionsRequired++;
+      if(currentConditions.orderBookImbalance >= rule.obMin ||
+         currentConditions.orderBookImbalance <= (100 - rule.obMin))
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Check signal strength
+   if(rule.requireStrength)
+   {
+      conditionsRequired++;
+      if(currentConditions.signalStrength >= rule.strengthMin)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Check MTF alignment
+   if(rule.requireMTF)
+   {
+      conditionsRequired++;
+      if(currentConditions.bullishTF >= rule.mtfMin)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Check bearish MTF
+   if(rule.requireBearishMTF)
+   {
+      conditionsRequired++;
+      if(currentConditions.bearishTF >= rule.bearishMin)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Check nearby support
+   if(rule.requireSupport)
+   {
+      conditionsRequired++;
+      double pipDistance = MathAbs(currentConditions.currentPrice - currentConditions.nearestSupport) / 
+                          (SymbolInfoDouble(Symbol(), SYMBOL_POINT) * 10);
+      if(pipDistance <= rule.supportDist)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Check nearby resistance
+   if(rule.requireResistance)
+   {
+      conditionsRequired++;
+      double pipDistance = MathAbs(currentConditions.currentPrice - currentConditions.nearestResistance) / 
+                          (SymbolInfoDouble(Symbol(), SYMBOL_POINT) * 10);
+      if(pipDistance <= rule.resistDist)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Check ATR expansion
+   if(rule.requireATR)
+   {
+      conditionsRequired++;
+      if(currentConditions.atrRatio >= rule.atrMin)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Check risk level
+   if(rule.requireRisk)
+   {
+      conditionsRequired++;
+      if(currentConditions.riskLevel >= rule.riskMin)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Check fake wall
+   if(rule.requireFakeWall)
+   {
+      conditionsRequired++;
+      if(currentConditions.fakeWallDetected)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Check MTF divergence
+   if(rule.requireDivergence)
+   {
+      conditionsRequired++;
+      if(currentConditions.mtfDivergence)
+         conditionsMet++;
+      else if(InpUseANDLogic)
+         return false;
+   }
+   
+   //--- Final evaluation
+   if(InpUseANDLogic)
+      return (conditionsMet == conditionsRequired && conditionsRequired > 0);
+   else
+      return (conditionsMet > 0); // OR logic - at least one condition met
+}
+
+//+------------------------------------------------------------------+
+//| Trigger Alert                                                     |
+//+------------------------------------------------------------------+
+void TriggerAlert(int ruleIndex)
+{
+   string message = "\n" + StringFormat("%50s", "=") + "\n";
+   message += "CUSTOM ALERT: " + rules[ruleIndex].name + "\n";
+   message += StringFormat("%50s", "=") + "\n";
+   message += "Symbol: " + Symbol() + "\n";
+   message += "Time: " + TimeToString(TimeCurrent()) + "\n";
+   message += "Price: " + DoubleToString(currentConditions.currentPrice, _Digits) + "\n\n";
+   message += "Conditions Met:\n";
+   
+   if(rules[ruleIndex].requireVolume && currentConditions.volumeRatio >= rules[ruleIndex].volumeMin)
+      message += "✓ Volume: " + DoubleToString(currentConditions.volumeRatio, 2) + "x\n";
+   
+   if(rules[ruleIndex].requireOrderBook)
+      message += "✓ Order Book: " + DoubleToString(currentConditions.orderBookImbalance, 1) + "%\n";
+   
+   if(rules[ruleIndex].requireStrength)
+      message += "✓ Strength: " + IntegerToString(currentConditions.signalStrength) + "%\n";
+   
+   if(rules[ruleIndex].requireMTF)
+      message += "✓ Bullish TFs: " + IntegerToString(currentConditions.bullishTF) + "/4\n";
+   
+   if(rules[ruleIndex].requireBearishMTF)
+      message += "✓ Bearish TFs: " + IntegerToString(currentConditions.bearishTF) + "/4\n";
+   
+   if(rules[ruleIndex].requireATR)
+      message += "✓ ATR Expansion: " + DoubleToString(currentConditions.atrRatio, 2) + "x\n";
+   
+   if(rules[ruleIndex].requireRisk)
+      message += "✓ Risk Level: " + IntegerToString(currentConditions.riskLevel) + "/5\n";
+   
+   if(rules[ruleIndex].requireFakeWall && currentConditions.fakeWallDetected)
+      message += "✓ Fake Wall Detected\n";
+   
+   if(rules[ruleIndex].requireDivergence && currentConditions.mtfDivergence)
+      message += "✓ MTF Divergence\n";
+   
+   message += StringFormat("%50s", "=") + "\n";
+   
+   //--- Send alerts
+   if(InpEnablePopupAlerts)
+      Alert(message);
+   
+   if(InpEnableSoundAlerts)
+      PlaySound(rules[ruleIndex].soundFile);
+   
+   if(InpEnablePushAlerts)
+   {
+      string pushMsg = rules[ruleIndex].name + " alert for " + Symbol();
+      SendNotification(pushMsg);
+   }
+   
+   Print("ALERT TRIGGERED: ", rules[ruleIndex].name);
+}
+
+//+------------------------------------------------------------------+
+//| Create Alert Panel                                                |
+//+------------------------------------------------------------------+
+void CreateAlertPanel()
+{
+   int width = 300;
+   int height = 180;
+   int x = 20;
+   int y = alertsPanelY;
+   
+   CreateRect(objPrefix + "Panel", x, y, width, height, C'20,20,30');
+   CreateLabel(objPrefix + "Title", x + 10, y + 10, "CUSTOM ALERTS", clrGold, 10, "Arial Bold");
+   
+   int yPos = y + 35;
+   CreateRect(objPrefix + "Line1", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   yPos += 10;
+   for(int i = 0; i < 3; i++)
+   {
+      string prefix = objPrefix + "Rule" + IntegerToString(i);
+      
+      string statusText = rules[i].enabled ? "[ON]" : "[OFF]";
+      color statusColor = rules[i].enabled ? clrLimeGreen : clrDimGray;
+      
+      CreateLabel(prefix + "_Status", x + 15, yPos, statusText, statusColor, 8, "Arial Bold");
+      CreateLabel(prefix + "_Name", x + 55, yPos, rules[i].name, clrWhite, 8, "Arial");
+      CreateLabel(prefix + "_Count", x + 250, yPos, "0", clrGold, 8, "Arial Bold");
+      
+      yPos += 20;
+   }
+   
+   yPos += 10;
+   CreateRect(objPrefix + "Line2", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   yPos += 10;
+   CreateLabel(objPrefix + "LogicLabel", x + 15, yPos, "Logic Mode:", clrWhite, 8, "Arial");
+   string logicText = InpUseANDLogic ? "AND (All)" : "OR (Any)";
+   CreateLabel(objPrefix + "LogicValue", x + 100, yPos, logicText, clrGold, 8, "Arial Bold");
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "CooldownLabel", x + 15, yPos, "Cooldown:", clrWhite, 8, "Arial");
+   CreateLabel(objPrefix + "CooldownValue", x + 100, yPos, IntegerToString(InpAlertCooldown) + "s", clrWhite, 8, "Arial");
+}
+
+//+------------------------------------------------------------------+
+//| Update Alert Panel                                                |
+//+------------------------------------------------------------------+
+void UpdateAlertPanel()
+{
+   for(int i = 0; i < 3; i++)
+   {
+      string prefix = objPrefix + "Rule" + IntegerToString(i);
+      ObjectSetString(0, prefix + "_Count", OBJPROP_TEXT, IntegerToString(rules[i].triggeredCount));
+   }
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Count Enabled Rules                                              |
+//+------------------------------------------------------------------+
+int CountEnabledRules()
+{
+   int count = 0;
+   for(int i = 0; i < 3; i++)
+      if(rules[i].enabled)
+         count++;
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create label                                             |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, int x, int y, string text, color clr, int size, string font)
+{
+   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create rectangle                                         |
+//+------------------------------------------------------------------+
+void CreateRect(string name, int x, int y, int width, int height, color clr)
+{
+   ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+}
+//+------------------------------------------------------------------+

@@ -1,0 +1,52 @@
+{
+  "name": "miniature-enigma",
+  "version": "5.0.0",
+  "description": "AGI-Level KuCoin Futures Trading Bot with 10 Enhanced Indicators and 3 Microstructure Analyzers",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:paper": "BOT_MODE=paper node index.js",
+    "start:live": "BOT_MODE=live node index.js",
+    "paper": "node scripts/start-paper-trading.js",
+    "live": "node scripts/start-live-trading.js --confirm",
+    "server": "node server.js",
+    "dashboard": "node server.js",
+    "setup": "node scripts/setup-api.js",
+    "fetch-ohlcv": "node scripts/fetch-ohlcv.js",
+    "backtest": "node scripts/backtest-runner.js",
+    "export": "node scripts/export-signals.js",
+    "optimize": "node scripts/optimize.js",
+    "optimize:aggressive": "node scripts/optimize.js --aggressive --cycles 5",
+    "walk-forward": "node scripts/walk-forward.js",
+    "monitor": "node scripts/monitor.js",
+    "monitor:auto": "node scripts/monitor.js --auto-tune --interval 60",
+    "analyze": "node scripts/optimize.js --analyze",
+    "validate": "node -e \"require('./config/apiCredentials').getCredentials().validateCredentials().then(v => console.log(v ? 'Valid' : 'Invalid'))\"",
+    "test": "node tests/indicators.test.js && node tests/microstructure.test.js && node tests/signalGenerator.test.js",
+    "test:indicators": "node tests/indicators.test.js",
+    "test:microstructure": "node tests/microstructure.test.js",
+    "test:signals": "node tests/signalGenerator.test.js",
+    "test:trading": "node tests/tradingEngine.test.js",
+    "lint": "echo 'No linter configured'"
+  },
+  "keywords": [
+    "trading",
+    "bot",
+    "kucoin",
+    "futures",
+    "cryptocurrency",
+    "technical-analysis",
+    "algorithmic-trading",
+    "optimization"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "decimal.js": "^10.6.0",
+    "ws": "^8.19.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,744 @@
+//+------------------------------------------------------------------+
+//|                              UnifiedTradingSystem.mq5            |
+//|           Complete Integration: Volume + Clustering + Alerts     |
+//|                    Multi-Timeframe Analysis Dashboard             |
+//+------------------------------------------------------------------+
+#property copyright "Unified Trading System"
+#property version   "1.00"
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots 0
+
+//--- Input parameters
+input group "=== System Settings ==="
+input bool     InpEnableVolumeAnalysis = true;  // Enable Volume Analysis
+input bool     InpEnableLevelClustering = true; // Enable Level Clustering
+input bool     InpEnablePumpAlerts = true;      // Enable Pump Alerts
+input bool     InpEnableBacktest = true;        // Enable Backtesting Mode
+
+input group "=== Multi-Timeframe Settings ==="
+input ENUM_TIMEFRAMES InpTF1 = PERIOD_M5;   // Timeframe 1
+input ENUM_TIMEFRAMES InpTF2 = PERIOD_M15;  // Timeframe 2
+input ENUM_TIMEFRAMES InpTF3 = PERIOD_H1;   // Timeframe 3
+input ENUM_TIMEFRAMES InpTF4 = PERIOD_H2;   // Timeframe 4
+
+input group "=== Volume Ratio Settings ==="
+input int      InpVolLookback = 30;         // Volume Lookback Period
+input double   InpBuyThreshold = 1.5;       // Buy Pressure Threshold
+input double   InpSellThreshold = 0.67;     // Sell Pressure Threshold
+
+input group "=== Level Clustering Settings ==="
+input int      InpMinClusterSize = 3;       // Min Cluster Size
+input double   InpClusterDistance = 0.0005; // Cluster Distance (%)
+input double   InpMinWallSize = 1.0;        // Min Wall Size (lots)
+input bool     InpDetectFakeWalls = true;   // Detect Fake Walls
+input int      InpWallLifetime = 30;        // Wall Lifetime (seconds)
+
+input group "=== Pump Alert Settings ==="
+input int      InpMinConditions = 3;        // Min Conditions for Alert
+input double   InpVolSpikeThreshold = 2.5;  // Volume Spike Multiple
+input double   InpImbalanceThreshold = 70.0;// Imbalance Threshold (%)
+input double   InpATRExpansion = 1.5;       // ATR Expansion Multiple
+
+input group "=== ATR Settings ==="
+input int      InpATRPeriod = 14;           // ATR Period
+input double   InpATRMultiplier = 2.0;      // ATR Distance Multiplier
+
+input group "=== Dashboard Settings ==="
+input int      InpPanelXOffset = 20;        // Panel X Offset
+input int      InpPanelYOffset = 20;        // Panel Y Offset
+input color    InpPanelColor = C'10,10,20'; // Panel Background
+input color    InpAccentColor = clrGold;    // Accent Color
+input int      InpFontSize = 8;             // Font Size
+input bool     InpCompactMode = false;      // Compact Dashboard
+
+input group "=== Signal Strength Weights ==="
+input int      InpWeightVolume = 30;        // Volume Weight (%)
+input int      InpWeightOrderBook = 25;     // Order Book Weight (%)
+input int      InpWeightATR = 20;           // ATR Weight (%)
+input int      InpWeightClustering = 15;    // Clustering Weight (%)
+input int      InpWeightMTF = 10;           // MTF Weight (%)
+
+input group "=== Alerts & Logging ==="
+input bool     InpEnableAlerts = true;      // Enable Alerts
+input bool     InpEnableSounds = true;      // Enable Sound Alerts
+input string   InpAlertSound = "alert2.wav";// Alert Sound
+input int      InpAlertCooldown = 300;      // Alert Cooldown (sec)
+input bool     InpLogToFile = true;         // Log to File
+input bool     InpLogDetailedData = true;   // Log Detailed Data
+
+//--- Structures
+struct TimeframeData
+{
+   ENUM_TIMEFRAMES period;
+   string name;
+   double volumeRatio;
+   double buyVolume;
+   double sellVolume;
+   int signalStrength;
+   string signal;
+   double atr;
+};
+
+struct ClusterLevel
+{
+   double price;
+   double volume;
+   int type;           // 0=support, 1=resistance
+   bool isFake;
+   int orderCount;
+   double strength;
+   datetime lastUpdate;
+};
+
+struct UnifiedSignal
+{
+   datetime timestamp;
+   string signalType;  // "BUY", "SELL", "PUMP_ALERT", "DUMP_ALERT"
+   int overallStrength; // 0-100
+   int riskLevel;      // 1-5
+   
+   // Volume component
+   double volumeScore;
+   bool volumeSpike;
+   
+   // Order book component
+   double orderBookScore;
+   double imbalance;
+   
+   // ATR component
+   double atrScore;
+   bool atrExpansion;
+   
+   // Clustering component
+   double clusteringScore;
+   int nearbySupports;
+   int nearbyResistances;
+   
+   // MTF component
+   double mtfScore;
+   int bullishTimeframes;
+   int bearishTimeframes;
+   
+   // Conditions
+   int conditionsMet;
+   bool fakeWallDetected;
+   
+   string recommendation;
+};
+
+//--- Global variables
+string objPrefix = "UTS_";
+TimeframeData tfData[4];
+ClusterLevel activeClusters[];
+UnifiedSignal currentSignal;
+MqlBookInfo bookArray[];
+int atrHandle = INVALID_HANDLE;
+bool orderBookAvailable = false;
+datetime lastAlertTime = 0;
+int fileHandle = INVALID_HANDLE;
+
+//--- Order book history for wall tracking
+struct WallHistory
+{
+   datetime timestamp;
+   double price;
+   double volume;
+   int type;
+};
+WallHistory wallHistory[];
+
+//+------------------------------------------------------------------+
+//| Custom indicator initialization                                  |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   Print("=== Unified Trading System Initialization ===");
+   
+   //--- Subscribe to order book
+   if(MarketBookAdd(Symbol()))
+   {
+      orderBookAvailable = true;
+      Print("✓ Order Book available");
+   }
+   else
+   {
+      orderBookAvailable = false;
+      Print("⚠ Order Book not available - some features disabled");
+   }
+   
+   //--- Initialize ATR
+   atrHandle = iATR(Symbol(), PERIOD_CURRENT, InpATRPeriod);
+   if(atrHandle == INVALID_HANDLE)
+   {
+      Print("✗ Failed to create ATR indicator");
+      return(INIT_FAILED);
+   }
+   Print("✓ ATR indicator initialized");
+   
+   //--- Initialize timeframe data
+   ENUM_TIMEFRAMES tfs[4] = {InpTF1, InpTF2, InpTF3, InpTF4};
+   string tfNames[4] = {"TF1", "TF2", "TF3", "TF4"};
+   
+   for(int i = 0; i < 4; i++)
+   {
+      tfData[i].period = tfs[i];
+      tfData[i].name = GetTimeframeName(tfs[i]);
+      tfData[i].volumeRatio = 1.0;
+      tfData[i].signalStrength = 0;
+      tfData[i].signal = "NEUTRAL";
+   }
+   Print("✓ Multi-timeframe analysis configured");
+   
+   //--- Initialize arrays
+   ArrayResize(activeClusters, 0);
+   ArrayResize(wallHistory, 0);
+   
+   //--- Open log file
+   if(InpLogToFile)
+   {
+      string filename = "UnifiedSystem_" + Symbol() + "_" + 
+                        TimeToString(TimeCurrent(), TIME_DATE) + ".csv";
+      fileHandle = FileOpen(filename, FILE_WRITE|FILE_CSV|FILE_ANSI, ",");
+      if(fileHandle != INVALID_HANDLE)
+      {
+         FileWrite(fileHandle, "Timestamp", "SignalType", "Strength", "RiskLevel",
+                   "VolumeScore", "OrderBookScore", "ATRScore", "ClusteringScore", 
+                   "MTFScore", "ConditionsMet", "FakeWall", "Recommendation", "Price");
+         Print("✓ Log file created");
+      }
+   }
+   
+   //--- Create dashboard
+   CreateUnifiedDashboard();
+   Print("✓ Dashboard created");
+   
+   //--- Set timer
+   EventSetTimer(2); // Update every 2 seconds
+   
+   Print("=== System Ready ===");
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator deinitialization                                |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   if(orderBookAvailable)
+      MarketBookRelease(Symbol());
+   
+   if(atrHandle != INVALID_HANDLE)
+      IndicatorRelease(atrHandle);
+   
+   if(fileHandle != INVALID_HANDLE)
+   {
+      FileClose(fileHandle);
+      fileHandle = INVALID_HANDLE;
+   }
+   
+   ObjectsDeleteAll(0, objPrefix);
+   EventKillTimer();
+   
+   Print("Unified Trading System deinitialized");
+}
+
+//+------------------------------------------------------------------+
+//| Timer function - main analysis loop                              |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   //--- Run all analysis modules
+   if(InpEnableVolumeAnalysis)
+      AnalyzeVolumeRatios();
+   
+   if(InpEnableLevelClustering && orderBookAvailable)
+      AnalyzeLevelClusters();
+   
+   if(InpEnablePumpAlerts)
+      AnalyzePumpDumpConditions();
+   
+   //--- Generate unified signal
+   GenerateUnifiedSignal();
+   
+   //--- Update dashboard
+   UpdateUnifiedDashboard();
+   
+   //--- Visualize levels on chart
+   if(InpEnableLevelClustering)
+      VisualizeClusters();
+   
+   //--- Check for alerts
+   if(InpEnableAlerts)
+      CheckForAlerts();
+   
+   //--- Log data
+   if(InpLogToFile && fileHandle != INVALID_HANDLE)
+      LogUnifiedSignal();
+}
+
+//+------------------------------------------------------------------+
+//| Custom indicator iteration                                       |
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+{
+   return(rates_total);
+}
+
+//+------------------------------------------------------------------+
+//| Analyze Volume Ratios for all timeframes                         |
+//+------------------------------------------------------------------+
+void AnalyzeVolumeRatios()
+{
+   for(int i = 0; i < 4; i++)
+   {
+      double buyVol = 0, sellVol = 0;
+      
+      for(int j = 0; j < InpVolLookback; j++)
+      {
+         double open = iOpen(Symbol(), tfData[i].period, j);
+         double close = iClose(Symbol(), tfData[i].period, j);
+         long vol = iVolume(Symbol(), tfData[i].period, j);
+         
+         if(close > open)
+            buyVol += (double)vol;
+         else if(close < open)
+            sellVol += (double)vol;
+         else
+         {
+            buyVol += (double)vol * 0.5;
+            sellVol += (double)vol * 0.5;
+         }
+      }
+      
+      tfData[i].buyVolume = buyVol;
+      tfData[i].sellVolume = sellVol;
+      tfData[i].volumeRatio = buyVol / (sellVol + 1e-9);
+      
+      //--- Determine signal
+      if(tfData[i].volumeRatio >= InpBuyThreshold)
+      {
+         tfData[i].signal = "BUY";
+         tfData[i].signalStrength = (int)(60 + 40 * MathMin((tfData[i].volumeRatio - InpBuyThreshold) / (2.5 - InpBuyThreshold), 1.0));
+      }
+      else if(tfData[i].volumeRatio <= InpSellThreshold)
+      {
+         tfData[i].signal = "SELL";
+         double inverseRatio = 1.0 / (tfData[i].volumeRatio + 1e-9);
+         tfData[i].signalStrength = (int)(60 + 40 * MathMin((inverseRatio - (1.0/InpSellThreshold)) / (2.5 - (1.0/InpSellThreshold)), 1.0));
+      }
+      else
+      {
+         tfData[i].signal = "NEUTRAL";
+         tfData[i].signalStrength = (int)(50 * (1.0 - MathAbs(tfData[i].volumeRatio - 1.0)));
+      }
+      
+      //--- Get ATR
+      double atrBuffer[];
+      ArraySetAsSeries(atrBuffer, true);
+      if(CopyBuffer(atrHandle, 0, 0, 1, atrBuffer) > 0)
+         tfData[i].atr = atrBuffer[0];
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Analyze Level Clusters from order book                           |
+//+------------------------------------------------------------------+
+void AnalyzeLevelClusters()
+{
+   if(!MarketBookGet(Symbol(), bookArray))
+      return;
+   
+   ArrayResize(activeClusters, 0);
+   datetime now = TimeCurrent();
+   double currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   
+   //--- Capture current order book state
+   for(int i = 0; i < ArraySize(bookArray); i++)
+   {
+      if(bookArray[i].volume_real < InpMinWallSize)
+         continue;
+      
+      int type = -1;
+      if(bookArray[i].type == BOOK_TYPE_BUY || bookArray[i].type == BOOK_TYPE_BUY_MARKET)
+         type = 0;
+      else if(bookArray[i].type == BOOK_TYPE_SELL || bookArray[i].type == BOOK_TYPE_SELL_MARKET)
+         type = 1;
+      else
+         continue;
+      
+      //--- Add to clusters
+      bool addedToCluster = false;
+      for(int j = 0; j < ArraySize(activeClusters); j++)
+      {
+         if(activeClusters[j].type != type)
+            continue;
+         
+         double priceDiff = MathAbs(activeClusters[j].price - bookArray[i].price);
+         if(priceDiff <= bookArray[i].price * InpClusterDistance)
+         {
+            activeClusters[j].volume += bookArray[i].volume_real;
+            activeClusters[j].orderCount++;
+            activeClusters[j].lastUpdate = now;
+            activeClusters[j].price = (activeClusters[j].price * (activeClusters[j].orderCount - 1) + bookArray[i].price) / activeClusters[j].orderCount;
+            addedToCluster = true;
+            break;
+         }
+      }
+      
+      if(!addedToCluster)
+      {
+         int newSize = ArraySize(activeClusters) + 1;
+         ArrayResize(activeClusters, newSize);
+         activeClusters[newSize-1].price = bookArray[i].price;
+         activeClusters[newSize-1].volume = bookArray[i].volume_real;
+         activeClusters[newSize-1].type = type;
+         activeClusters[newSize-1].isFake = false;
+         activeClusters[newSize-1].orderCount = 1;
+         activeClusters[newSize-1].lastUpdate = now;
+         activeClusters[newSize-1].strength = 50;
+      }
+   }
+   
+   //--- Detect fake walls
+   if(InpDetectFakeWalls)
+      DetectFakeWalls();
+}
+
+//+------------------------------------------------------------------+
+//| Detect Fake Walls                                                 |
+//+------------------------------------------------------------------+
+void DetectFakeWalls()
+{
+   datetime now = TimeCurrent();
+   
+   //--- Compare with wall history
+   for(int i = 0; i < ArraySize(wallHistory); i++)
+   {
+      bool foundInCurrent = false;
+      
+      for(int j = 0; j < ArraySize(activeClusters); j++)
+      {
+         if(MathAbs(wallHistory[i].price - activeClusters[j].price) < Point() * 10 &&
+            wallHistory[i].type == activeClusters[j].type)
+         {
+            foundInCurrent = true;
+            break;
+         }
+      }
+      
+      if(!foundInCurrent && wallHistory[i].volume >= InpMinWallSize * 2)
+      {
+         int lifetime = (int)(now - wallHistory[i].timestamp);
+         if(lifetime < InpWallLifetime)
+         {
+            currentSignal.fakeWallDetected = true;
+         }
+      }
+   }
+   
+   //--- Update wall history
+   ArrayResize(wallHistory, ArraySize(activeClusters));
+   for(int i = 0; i < ArraySize(activeClusters); i++)
+   {
+      wallHistory[i].timestamp = now;
+      wallHistory[i].price = activeClusters[i].price;
+      wallHistory[i].volume = activeClusters[i].volume;
+      wallHistory[i].type = activeClusters[i].type;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Analyze Pump/Dump Conditions                                     |
+//+------------------------------------------------------------------+
+void AnalyzePumpDumpConditions()
+{
+   currentSignal.volumeSpike = false;
+   currentSignal.atrExpansion = false;
+   
+   //--- Check volume spike
+   long volumeArray[];
+   ArraySetAsSeries(volumeArray, true);
+   if(CopyTickVolume(Symbol(), PERIOD_CURRENT, 0, 21, volumeArray) > 0)
+   {
+      long sum = 0;
+      for(int i = 1; i < ArraySize(volumeArray); i++)
+         sum += volumeArray[i];
+      double avgVol = (double)sum / (ArraySize(volumeArray) - 1);
+      if(avgVol > 0 && (double)volumeArray[0] / avgVol >= InpVolSpikeThreshold)
+         currentSignal.volumeSpike = true;
+   }
+   
+   //--- Check ATR expansion
+   double atrArray[];
+   ArraySetAsSeries(atrArray, true);
+   if(CopyBuffer(atrHandle, 0, 0, 21, atrArray) > 0)
+   {
+      double sum = 0;
+      for(int i = 1; i < ArraySize(atrArray); i++)
+         sum += atrArray[i];
+      double avgATR = sum / (ArraySize(atrArray) - 1);
+      if(avgATR > 0 && atrArray[0] / avgATR >= InpATRExpansion)
+         currentSignal.atrExpansion = true;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Generate Unified Signal                                           |
+//+------------------------------------------------------------------+
+void GenerateUnifiedSignal()
+{
+   currentSignal.timestamp = TimeCurrent();
+   currentSignal.conditionsMet = 0;
+   
+   //--- Calculate volume score
+   double avgVolumeRatio = 0;
+   for(int i = 0; i < 4; i++)
+      avgVolumeRatio += tfData[i].volumeRatio;
+   avgVolumeRatio /= 4.0;
+   
+   currentSignal.volumeScore = MathMin(MathAbs(avgVolumeRatio - 1.0) * 50, 100);
+   if(currentSignal.volumeSpike)
+   {
+      currentSignal.volumeScore = MathMin(currentSignal.volumeScore * 1.5, 100);
+      currentSignal.conditionsMet++;
+   }
+   
+   //--- Calculate order book score
+   if(orderBookAvailable && ArraySize(bookArray) > 0)
+   {
+      double totalBids = 0, totalAsks = 0;
+      for(int i = 0; i < ArraySize(bookArray) && i < 10; i++)
+      {
+         if(bookArray[i].type == BOOK_TYPE_BUY || bookArray[i].type == BOOK_TYPE_BUY_MARKET)
+            totalBids += bookArray[i].volume_real;
+         else if(bookArray[i].type == BOOK_TYPE_SELL || bookArray[i].type == BOOK_TYPE_SELL_MARKET)
+            totalAsks += bookArray[i].volume_real;
+      }
+      double total = totalBids + totalAsks;
+      currentSignal.imbalance = (total > 0) ? (totalBids / total) * 100 : 50;
+      currentSignal.orderBookScore = MathAbs(currentSignal.imbalance - 50) * 2;
+      
+      if(currentSignal.imbalance >= InpImbalanceThreshold || currentSignal.imbalance <= (100 - InpImbalanceThreshold))
+         currentSignal.conditionsMet++;
+   }
+   else
+   {
+      currentSignal.orderBookScore = 0;
+      currentSignal.imbalance = 50;
+   }
+   
+   //--- Calculate ATR score
+   currentSignal.atrScore = currentSignal.atrExpansion ? 80 : 40;
+   if(currentSignal.atrExpansion)
+      currentSignal.conditionsMet++;
+   
+   //--- Calculate clustering score
+   double currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   currentSignal.nearbySupports = 0;
+   currentSignal.nearbyResistances = 0;
+   
+   double atrValue = (tfData[0].atr > 0) ? tfData[0].atr : 1.0;
+   
+   for(int i = 0; i < ArraySize(activeClusters); i++)
+   {
+      double distance = MathAbs(activeClusters[i].price - currentPrice);
+      if(distance <= atrValue * InpATRMultiplier)
+      {
+         if(activeClusters[i].type == 0)
+            currentSignal.nearbySupports++;
+         else
+            currentSignal.nearbyResistances++;
+      }
+   }
+   
+   currentSignal.clusteringScore = (currentSignal.nearbySupports + currentSignal.nearbyResistances) * 10;
+   currentSignal.clusteringScore = MathMin(currentSignal.clusteringScore, 100);
+   
+   //--- Calculate MTF score
+   currentSignal.bullishTimeframes = 0;
+   currentSignal.bearishTimeframes = 0;
+   
+   for(int i = 0; i < 4; i++)
+   {
+      if(tfData[i].signal == "BUY")
+         currentSignal.bullishTimeframes++;
+      else if(tfData[i].signal == "SELL")
+         currentSignal.bearishTimeframes++;
+   }
+   
+   int mtfAlignment = MathMax(currentSignal.bullishTimeframes, currentSignal.bearishTimeframes);
+   currentSignal.mtfScore = (mtfAlignment / 4.0) * 100;
+   
+   if(mtfAlignment >= 3)
+      currentSignal.conditionsMet++;
+   
+   //--- Fake wall detection
+   if(currentSignal.fakeWallDetected)
+      currentSignal.conditionsMet++;
+   
+   //--- Calculate overall strength (weighted)
+   double totalWeight = InpWeightVolume + InpWeightOrderBook + InpWeightATR + InpWeightClustering + InpWeightMTF;
+   currentSignal.overallStrength = (int)(
+      (currentSignal.volumeScore * InpWeightVolume / 100.0 +
+       currentSignal.orderBookScore * InpWeightOrderBook / 100.0 +
+       currentSignal.atrScore * InpWeightATR / 100.0 +
+       currentSignal.clusteringScore * InpWeightClustering / 100.0 +
+       currentSignal.mtfScore * InpWeightMTF / 100.0) / (totalWeight / 100.0)
+   );
+   
+   //--- Determine risk level
+   if(currentSignal.conditionsMet >= 5)
+      currentSignal.riskLevel = 5;
+   else if(currentSignal.conditionsMet >= 4)
+      currentSignal.riskLevel = 4;
+   else if(currentSignal.conditionsMet >= 3)
+      currentSignal.riskLevel = 3;
+   else if(currentSignal.conditionsMet >= 2)
+      currentSignal.riskLevel = 2;
+   else
+      currentSignal.riskLevel = 1;
+   
+   //--- Determine signal type
+   if(currentSignal.bullishTimeframes > currentSignal.bearishTimeframes)
+   {
+      if(currentSignal.riskLevel >= 4)
+         currentSignal.signalType = "PUMP_ALERT";
+      else
+         currentSignal.signalType = "BUY";
+   }
+   else if(currentSignal.bearishTimeframes > currentSignal.bullishTimeframes)
+   {
+      if(currentSignal.riskLevel >= 4)
+         currentSignal.signalType = "DUMP_ALERT";
+      else
+         currentSignal.signalType = "SELL";
+   }
+   else
+      currentSignal.signalType = "NEUTRAL";
+   
+   //--- Generate recommendation
+   if(currentSignal.riskLevel >= 5)
+      currentSignal.recommendation = "EXTREME RISK - Avoid trading";
+   else if(currentSignal.riskLevel >= 4)
+      currentSignal.recommendation = "HIGH RISK - Reduce position size";
+   else if(currentSignal.riskLevel >= 3)
+      currentSignal.recommendation = "MEDIUM RISK - Trade with caution";
+   else
+      currentSignal.recommendation = "Normal market conditions";
+   
+   currentSignal.price = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+}
+
+//+------------------------------------------------------------------+
+//| Create Unified Dashboard                                          |
+//+------------------------------------------------------------------+
+void CreateUnifiedDashboard()
+{
+   int width = InpCompactMode ? 340 : 420;
+   int height = InpCompactMode ? 380 : 480;
+   
+   int chartWidth = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int chartHeight = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   
+   int x = chartWidth - width - InpPanelXOffset;
+   int y = chartHeight - height - InpPanelYOffset;
+   
+   CreateRect(objPrefix + "Panel", x, y, width, height, InpPanelColor);
+   CreateLabel(objPrefix + "Title", x + 10, y + 10, "UNIFIED TRADING SYSTEM", InpAccentColor, 12, "Arial Bold");
+   CreateLabel(objPrefix + "Symbol", x + 10, y + 30, Symbol(), clrWhite, 9, "Arial");
+   CreateLabel(objPrefix + "Time", x + width - 150, y + 30, TimeToString(TimeCurrent()), clrDimGray, 8, "Arial");
+   
+   int yPos = y + 55;
+   CreateRect(objPrefix + "Line1", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   //--- Multi-timeframe section
+   yPos += 10;
+   CreateLabel(objPrefix + "MTFHeader", x + 10, yPos, "Multi-Timeframe Analysis:", InpAccentColor, 9, "Arial Bold");
+   
+   yPos += 20;
+   for(int i = 0; i < 4; i++)
+   {
+      string tfLabel = objPrefix + "TF" + IntegerToString(i);
+      CreateLabel(tfLabel + "_Name", x + 20, yPos, tfData[i].name, clrWhite, InpFontSize, "Arial");
+      CreateLabel(tfLabel + "_Signal", x + 80, yPos, "NEUTRAL", clrGray, InpFontSize, "Arial Bold");
+      CreateLabel(tfLabel + "_Strength", x + 150, yPos, "0%", clrWhite, InpFontSize, "Arial");
+      CreateLabel(tfLabel + "_Ratio", x + 200, yPos, "1.00", clrDimGray, InpFontSize - 1, "Arial");
+      
+      yPos += 18;
+   }
+   
+   yPos += 5;
+   CreateRect(objPrefix + "Line2", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   //--- Score breakdown section
+   yPos += 10;
+   CreateLabel(objPrefix + "ScoreHeader", x + 10, yPos, "Component Scores:", InpAccentColor, 9, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "VolLabel", x + 20, yPos, "Volume:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "VolScore", x + 150, yPos, "0", clrWhite, InpFontSize, "Arial Bold");
+   CreateRect(objPrefix + "VolBar", x + 180, yPos + 3, 0, 10, clrDodgerBlue);
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "ClusterLabel", x + 20, yPos, "Clustering:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "ClusterScore", x + 150, yPos, "0", clrWhite, InpFontSize, "Arial Bold");
+   CreateRect(objPrefix + "ClusterBar", x + 180, yPos + 3, 0, 10, clrLimeGreen);
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "MTFLabel", x + 20, yPos, "MTF Alignment:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "MTFScore", x + 150, yPos, "0", clrWhite, InpFontSize, "Arial Bold");
+   CreateRect(objPrefix + "MTFBar", x + 180, yPos + 3, 0, 10, clrMagenta);
+   
+   yPos += 25;
+   CreateRect(objPrefix + "Line3", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   //--- Overall signal section
+   yPos += 10;
+   CreateLabel(objPrefix + "SignalHeader", x + 10, yPos, "OVERALL SIGNAL:", InpAccentColor, 10, "Arial Bold");
+   CreateLabel(objPrefix + "SignalType", x + 180, yPos, "NEUTRAL", clrWhite, 11, "Arial Bold");
+   
+   yPos += 25;
+   CreateLabel(objPrefix + "StrengthLabel", x + 20, yPos, "Strength:", clrWhite, 9, "Arial");
+   CreateLabel(objPrefix + "StrengthValue", x + 110, yPos, "0%", clrWhite, 10, "Arial Bold");
+   CreateRect(objPrefix + "StrengthBar", x + 160, yPos + 3, 0, 14, clrLimeGreen);
+   
+   yPos += 25;
+   CreateLabel(objPrefix + "RiskLabel", x + 20, yPos, "Risk Level:", clrWhite, 9, "Arial");
+   CreateLabel(objPrefix + "RiskValue", x + 110, yPos, "LOW", clrLimeGreen, 10, "Arial Bold");
+   
+   yPos += 25;
+   CreateLabel(objPrefix + "CondLabel", x + 20, yPos, "Conditions:", clrWhite, 9, "Arial");
+   CreateLabel(objPrefix + "CondValue", x + 110, yPos, "0/5", clrWhite, 9, "Arial Bold");
+   
+   yPos += 25;
+   CreateRect(objPrefix + "Line4", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   //--- Recommendation section
+   yPos += 10;
+   CreateLabel(objPrefix + "RecHeader", x + 10, yPos, "Recommendation:", InpAccentColor, 9, "Arial Bold");
+   yPos += 20;
+   CreateLabel(objPrefix + "RecText", x + 20, yPos, "Normal market conditions", clrWhite, 8, "Arial");
+   
+   yPos += 25;
+   CreateLabel(objPrefix + "ClusterInfo", x + 20, yPos, "Nearby: 0 SUP | 0 RES", clrDimGray, 8, "Arial");
+}Label(objPrefix + "OBLabel", x + 20, yPos, "Order Book:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "OBScore", x + 150, yPos, "0", clrWhite, InpFontSize, "Arial Bold");
+   CreateRect(objPrefix + "OBBar", x + 180, yPos + 3, 0, 10, clrGold);
+   
+   yPos += 18;
+   CreateLabel(objPrefix + "ATRLabel", x + 20, yPos, "ATR/Volatility:", clrWhite, InpFontSize, "Arial");
+   CreateLabel(objPrefix + "ATRScore", x + 150, yPos, "0", clrWhite, InpFontSize, "Arial Bold");
+   CreateRect(objPrefix + "ATRBar", x + 180, yPos + 3, 0, 10, clrOrange);
+   
+   yPos += 18;
+   Create

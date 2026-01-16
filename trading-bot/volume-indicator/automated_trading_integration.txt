@@ -1,0 +1,926 @@
+//+------------------------------------------------------------------+
+//| Update Trading Panel                                             |
+//+------------------------------------------------------------------+
+void UpdateTradingPanel()
+{
+   //--- Update open positions count
+   ObjectSetString(0, objPrefix + "OpenValue", OBJPROP_TEXT, IntegerToString(ArraySize(positions)));
+   
+   //--- Update total trades
+   ObjectSetString(0, objPrefix + "TotalValue", OBJPROP_TEXT, IntegerToString(stats.tradesClosed));
+   
+   //--- Update win rate
+   double winRate = (stats.tradesClosed > 0) ? (double)stats.wins / stats.tradesClosed * 100.0 : 0;
+   ObjectSetString(0, objPrefix + "WRValue", OBJPROP_TEXT, DoubleToString(winRate, 1) + "%");
+   color wrColor = (winRate >= 60) ? clrLimeGreen : (winRate >= 50) ? clrGold : clrOrangeRed;
+   ObjectSetInteger(0, objPrefix + "WRValue", OBJPROP_COLOR, wrColor);
+   
+   //--- Update daily P/L
+   string dailyPLText = (stats.dailyPL >= 0 ? "+" : "") + DoubleToString(stats.dailyPL, 2);
+   ObjectSetString(0, objPrefix + "DailyValue", OBJPROP_TEXT, "$" + dailyPLText);
+   color dailyColor = (stats.dailyPL >= 0) ? clrLimeGreen : clrOrangeRed;
+   ObjectSetInteger(0, objPrefix + "DailyValue", OBJPROP_COLOR, dailyColor);
+   
+   //--- Update total P/L
+   string totalPLText = (stats.totalPL >= 0 ? "+" : "") + DoubleToString(stats.totalPL, 2);
+   ObjectSetString(0, objPrefix + "TotalPLValue", OBJPROP_TEXT, "$" + totalPLText);
+   color totalColor = (stats.totalPL >= 0) ? clrLimeGreen : clrOrangeRed;
+   ObjectSetInteger(0, objPrefix + "TotalPLValue", OBJPROP_COLOR, totalColor);
+   
+   //--- Update status
+   string statusText = "Ready";
+   color statusColor = clrLimeGreen;
+   
+   if(stats.limitReached)
+   {
+      statusText = "LIMIT REACHED";
+      statusColor = clrRed;
+   }
+   else if(TimeCurrent() < stats.cooldownUntil)
+   {
+      int remainingMin = (int)((stats.cooldownUntil - TimeCurrent()) / 60);
+      statusText = "Cooldown: " + IntegerToString(remainingMin) + "m";
+      statusColor = clrOrange;
+   }
+   else if(ArraySize(positions) >= InpMaxPositions)
+   {
+      statusText = "Max Positions";
+      statusColor = clrGold;
+   }
+   
+   ObjectSetString(0, objPrefix + "StatusValue", OBJPROP_TEXT, statusText);
+   ObjectSetInteger(0, objPrefix + "StatusValue", OBJPROP_COLOR, statusColor);
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Helper Functions                                                  |
+//+------------------------------------------------------------------+
+double iATR(string symbol, ENUM_TIMEFRAMES timeframe, int period, int shift)
+{
+   double atr[];
+   ArraySetAsSeries(atr, true);
+   int handle = iATR(symbol, timeframe, period);
+   if(handle == INVALID_HANDLE)
+      return 0;
+   if(CopyBuffer(handle, 0, shift, 1, atr) <= 0)
+      return 0;
+   IndicatorRelease(handle);
+   return atr[0];
+}
+
+long iVolume(string symbol, ENUM_TIMEFRAMES timeframe, int shift)
+{
+   long vol[];
+   ArraySetAsSeries(vol, true);
+   if(CopyTickVolume(symbol, timeframe, shift, 1, vol) <= 0)
+      return 0;
+   return vol[0];
+}
+
+double iOpen(string symbol, ENUM_TIMEFRAMES timeframe, int shift)
+{
+   double open[];
+   ArraySetAsSeries(open, true);
+   if(CopyOpen(symbol, timeframe, shift, 1, open) <= 0)
+      return 0;
+   return open[0];
+}
+
+double iClose(string symbol, ENUM_TIMEFRAMES timeframe, int shift)
+{
+   double close[];
+   ArraySetAsSeries(close, true);
+   if(CopyClose(symbol, timeframe, shift, 1, close) <= 0)
+      return 0;
+   return close[0];
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create label                                             |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, int x, int y, string text, color clr, int size, string font)
+{
+   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Create rectangle                                         |
+//+------------------------------------------------------------------+
+void CreateRect(string name, int x, int y, int width, int height, color clr)
+{
+   ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+}
+
+//+------------------------------------------------------------------+
+//| Public function to process signal (call from unified system)     |
+//+------------------------------------------------------------------+
+void AutoTradeSignal(string signalType, int strength, int riskLevel, 
+                     int bullishTF, int bearishTF, double price)
+{
+   ProcessSignal(signalType, strength, riskLevel, bullishTF, bearishTF, price);
+}
+
+//+------------------------------------------------------------------+
+//| Public function to manually enable/disable trading               |
+//+------------------------------------------------------------------+
+void SetTradingEnabled(bool enabled)
+{
+   tradingEnabled = enabled;
+   Print("Auto Trading ", (enabled ? "ENABLED" : "DISABLED"));
+}
+
+//+------------------------------------------------------------------+
+//| Public function to get current stats                             |
+//+------------------------------------------------------------------+
+void GetTradingStats(int &opened, int &closed, int &wins, int &losses, 
+                     double &dailyPL, double &totalPL)
+{
+   opened = stats.tradesOpened;
+   closed = stats.tradesClosed;
+   wins = stats.wins;
+   losses = stats.losses;
+   dailyPL = stats.dailyPL;
+   totalPL = stats.totalPL;
+}
+//+------------------------------------------------------------------+                       AutomatedTradingIntegration.mq5            |
+//|                   Auto-Execute Based on System Signals            |
+//|              Risk Management, Position Sizing, Exit Logic         |
+//+------------------------------------------------------------------+
+#property copyright "Automated Trading Integration"
+#property version   "1.00"
+
+//--- Input parameters
+input group "=== Trading Mode ==="
+input bool     InpAutoTradingEnabled = false;  // Enable Auto Trading
+input bool     InpPaperTradingMode = true;     // Paper Trading Mode
+input double   InpMaxRiskPercent = 2.0;        // Max Risk Per Trade (%)
+input double   InpMaxDailyDrawdown = 5.0;      // Max Daily Drawdown (%)
+input int      InpMaxPositions = 3;            // Max Concurrent Positions
+
+input group "=== Entry Conditions ==="
+input int      InpMinSignalStrength = 70;      // Min Signal Strength
+input int      InpMaxRiskLevel = 3;            // Max Risk Level (1-5)
+input bool     InpRequireMTFConfirm = true;    // Require MTF Confirmation
+input int      InpMinBullishTF = 3;            // Min Bullish Timeframes
+input bool     InpAvoidHighRisk = true;        // Avoid High Risk Signals
+input bool     InpRequireSupport = false;      // Require Nearby Support
+
+input group "=== Position Sizing ==="
+input double   InpFixedLotSize = 0.01;         // Fixed Lot Size (if > 0)
+input bool     InpUseATRSizing = true;         // Use ATR-Based Sizing
+input double   InpATRMultiplier = 2.0;         // ATR Stop Loss Multiple
+input double   InpMinLotSize = 0.01;           // Min Lot Size
+input double   InpMaxLotSize = 1.0;            // Max Lot Size
+
+input group "=== Exit Strategy ==="
+input bool     InpUseFixedTP = true;           // Use Fixed Take Profit
+input int      InpTPPips = 50;                 // Take Profit (pips)
+input bool     InpUseFixedSL = true;           // Use Fixed Stop Loss
+input int      InpSLPips = 30;                 // Stop Loss (pips)
+input bool     InpUseTrailingStop = true;      // Enable Trailing Stop
+input int      InpTrailActivatePips = 20;      // Trail Activation (pips)
+input int      InpTrailDistancePips = 15;      // Trail Distance (pips)
+input bool     InpUseBreakeven = true;         // Move to Breakeven
+input int      InpBreakevenPips = 15;          // Breakeven Trigger (pips)
+input int      InpBreakevenBuffer = 5;         // Breakeven Buffer (pips)
+
+input group "=== Partial Profits ==="
+input bool     InpUsePartialTP = true;         // Enable Partial TP
+input double   InpPartial1Percent = 50.0;      // First TP Close %
+input int      InpPartial1Pips = 25;           // First TP Distance (pips)
+input double   InpPartial2Percent = 30.0;      // Second TP Close %
+input int      InpPartial2Pips = 40;           // Second TP Distance (pips)
+
+input group "=== Risk Management ==="
+input bool     InpCheckDailyLimit = true;      // Check Daily Loss Limit
+input bool     InpCheckWeeklyLimit = true;     // Check Weekly Loss Limit
+input double   InpWeeklyDrawdownLimit = 10.0;  // Weekly Drawdown (%)
+input bool     InpStopAfterConsecutiveLosses = true; // Stop After Losses
+input int      InpMaxConsecutiveLosses = 3;    // Max Consecutive Losses
+input int      InpCooldownMinutes = 60;        // Cooldown After Limit (min)
+
+input group "=== Safety Features ==="
+input bool     InpRequireConfirmation = true;  // Require Manual Confirmation
+input bool     InpCheckSpread = true;          // Check Spread Before Entry
+input int      InpMaxSpreadPips = 5;           // Max Spread (pips)
+input bool     InpCheckLiquidity = true;       // Check Liquidity
+input double   InpMinVolume = 100.0;           // Min Volume
+input bool     InpAvoidNews = false;           // Avoid News Times
+input int      InpNewsBufferMinutes = 30;      // News Buffer (minutes)
+
+input group "=== Logging & Monitoring ==="
+input bool     InpLogAllTrades = true;         // Log All Trades
+input bool     InpSendTradePush = false;       // Send Push Notifications
+input bool     InpShowTradingPanel = true;     // Show Trading Panel
+input int      InpPanelX = 20;                 // Panel X Position
+input int      InpPanelY = 300;                // Panel Y Position
+
+//--- Structures
+struct TradePosition
+{
+   ulong ticket;
+   datetime openTime;
+   string signalType;
+   double entryPrice;
+   double lotSize;
+   double stopLoss;
+   double takeProfit;
+   int signalStrength;
+   int riskLevel;
+   bool breakEvenSet;
+   bool partial1Done;
+   bool partial2Done;
+   double currentPips;
+};
+
+struct TradingStats
+{
+   int tradesOpened;
+   int tradesClosed;
+   int wins;
+   int losses;
+   int consecutiveLosses;
+   double dailyPL;
+   double weeklyPL;
+   double totalPL;
+   datetime lastTradeTime;
+   datetime cooldownUntil;
+   bool limitReached;
+};
+
+//--- Global variables
+string objPrefix = "AutoTrade_";
+TradePosition positions[];
+TradingStats stats;
+bool tradingEnabled = false;
+datetime lastCheck = 0;
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                    |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   Print("=== Automated Trading Integration Initialization ===");
+   
+   //--- Initialize arrays
+   ArrayResize(positions, 0);
+   
+   //--- Initialize stats
+   stats.tradesOpened = 0;
+   stats.tradesClosed = 0;
+   stats.wins = 0;
+   stats.losses = 0;
+   stats.consecutiveLosses = 0;
+   stats.dailyPL = 0;
+   stats.weeklyPL = 0;
+   stats.totalPL = 0;
+   stats.limitReached = false;
+   stats.cooldownUntil = 0;
+   
+   //--- Check if auto trading is enabled
+   if(!InpAutoTradingEnabled)
+   {
+      Print("⚠ Auto Trading is DISABLED in settings");
+      Comment("AUTO TRADING: DISABLED");
+   }
+   else if(InpPaperTradingMode)
+   {
+      Print("📝 PAPER TRADING MODE - No real trades will be executed");
+      Comment("MODE: PAPER TRADING");
+      tradingEnabled = true;
+   }
+   else
+   {
+      Print("🔴 LIVE TRADING MODE ENABLED");
+      Comment("MODE: LIVE TRADING");
+      tradingEnabled = true;
+   }
+   
+   //--- Create trading panel
+   if(InpShowTradingPanel)
+      CreateTradingPanel();
+   
+   //--- Set timer
+   EventSetTimer(1);
+   
+   Print("✓ Automated Trading Integration Ready");
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   ObjectsDeleteAll(0, objPrefix);
+   EventKillTimer();
+   
+   Print("=== Trading Session Summary ===");
+   Print("Trades Opened: ", stats.tradesOpened);
+   Print("Trades Closed: ", stats.tradesClosed);
+   Print("Win Rate: ", (stats.tradesClosed > 0 ? DoubleToString((double)stats.wins / stats.tradesClosed * 100, 1) : "0"), "%");
+   Print("Total P/L: ", DoubleToString(stats.totalPL, 2));
+}
+
+//+------------------------------------------------------------------+
+//| Timer function                                                    |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   if(!tradingEnabled)
+      return;
+   
+   //--- Update existing positions
+   UpdatePositions();
+   
+   //--- Check daily reset
+   CheckDailyReset();
+   
+   //--- Update panel
+   if(InpShowTradingPanel)
+      UpdateTradingPanel();
+}
+
+//+------------------------------------------------------------------+
+//| Process New Signal (call from unified system)                    |
+//+------------------------------------------------------------------+
+void ProcessSignal(string signalType, int strength, int riskLevel, 
+                   int bullishTF, int bearishTF, double price)
+{
+   if(!tradingEnabled)
+      return;
+   
+   //--- Check if in cooldown
+   if(TimeCurrent() < stats.cooldownUntil)
+   {
+      Print("In cooldown period - signal ignored");
+      return;
+   }
+   
+   //--- Check daily/weekly limits
+   if(stats.limitReached)
+   {
+      Print("Trading limit reached - signal ignored");
+      return;
+   }
+   
+   //--- Validate signal
+   if(!ValidateSignal(signalType, strength, riskLevel, bullishTF, bearishTF))
+      return;
+   
+   //--- Check risk management
+   if(!CheckRiskLimits())
+      return;
+   
+   //--- Check max positions
+   if(ArraySize(positions) >= InpMaxPositions)
+   {
+      Print("Max positions reached - signal ignored");
+      return;
+   }
+   
+   //--- Check safety conditions
+   if(!CheckSafetyConditions())
+      return;
+   
+   //--- Calculate position size
+   double lotSize = CalculateLotSize(riskLevel);
+   if(lotSize < InpMinLotSize)
+   {
+      Print("Lot size too small - signal ignored");
+      return;
+   }
+   
+   //--- Calculate stop loss and take profit
+   double sl, tp;
+   CalculateSLTP(signalType, price, sl, tp);
+   
+   //--- Confirmation dialog
+   if(InpRequireConfirmation && !InpPaperTradingMode)
+   {
+      string msg = StringFormat("Open %s position?\nLots: %.2f\nSL: %.5f\nTP: %.5f", 
+                                signalType, lotSize, sl, tp);
+      if(MessageBox(msg, "Trade Confirmation", MB_YESNO) != IDYES)
+      {
+         Print("Trade cancelled by user");
+         return;
+      }
+   }
+   
+   //--- Open position
+   if(InpPaperTradingMode)
+   {
+      OpenPaperTrade(signalType, price, lotSize, sl, tp, strength, riskLevel);
+   }
+   else
+   {
+      OpenRealTrade(signalType, price, lotSize, sl, tp, strength, riskLevel);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Validate Signal                                                  |
+//+------------------------------------------------------------------+
+bool ValidateSignal(string signalType, int strength, int riskLevel, 
+                    int bullishTF, int bearishTF)
+{
+   //--- Check signal strength
+   if(strength < InpMinSignalStrength)
+   {
+      Print("Signal strength too low: ", strength);
+      return false;
+   }
+   
+   //--- Check risk level
+   if(riskLevel > InpMaxRiskLevel)
+   {
+      Print("Risk level too high: ", riskLevel);
+      return false;
+   }
+   
+   //--- Check MTF confirmation
+   if(InpRequireMTFConfirm)
+   {
+      if(signalType == "BUY" && bullishTF < InpMinBullishTF)
+      {
+         Print("Insufficient MTF confirmation for BUY");
+         return false;
+      }
+      if(signalType == "SELL" && bearishTF < InpMinBullishTF)
+      {
+         Print("Insufficient MTF confirmation for SELL");
+         return false;
+      }
+   }
+   
+   //--- Avoid high risk if enabled
+   if(InpAvoidHighRisk && riskLevel >= 4)
+   {
+      Print("High risk signal avoided");
+      return false;
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Check Risk Limits                                                |
+//+------------------------------------------------------------------+
+bool CheckRiskLimits()
+{
+   //--- Check daily drawdown
+   if(InpCheckDailyLimit)
+   {
+      double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double dailyLossLimit = accountBalance * InpMaxDailyDrawdown / 100.0;
+      
+      if(stats.dailyPL < -dailyLossLimit)
+      {
+         Print("Daily loss limit reached: ", DoubleToString(stats.dailyPL, 2));
+         stats.limitReached = true;
+         stats.cooldownUntil = TimeCurrent() + InpCooldownMinutes * 60;
+         return false;
+      }
+   }
+   
+   //--- Check weekly drawdown
+   if(InpCheckWeeklyLimit)
+   {
+      double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double weeklyLossLimit = accountBalance * InpWeeklyDrawdownLimit / 100.0;
+      
+      if(stats.weeklyPL < -weeklyLossLimit)
+      {
+         Print("Weekly loss limit reached: ", DoubleToString(stats.weeklyPL, 2));
+         stats.limitReached = true;
+         return false;
+      }
+   }
+   
+   //--- Check consecutive losses
+   if(InpStopAfterConsecutiveLosses)
+   {
+      if(stats.consecutiveLosses >= InpMaxConsecutiveLosses)
+      {
+         Print("Max consecutive losses reached: ", stats.consecutiveLosses);
+         stats.cooldownUntil = TimeCurrent() + InpCooldownMinutes * 60;
+         return false;
+      }
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Check Safety Conditions                                          |
+//+------------------------------------------------------------------+
+bool CheckSafetyConditions()
+{
+   //--- Check spread
+   if(InpCheckSpread)
+   {
+      long spread = SymbolInfoInteger(Symbol(), SYMBOL_SPREAD);
+      if(spread > InpMaxSpreadPips * 10)
+      {
+         Print("Spread too high: ", spread / 10.0, " pips");
+         return false;
+      }
+   }
+   
+   //--- Check volume/liquidity
+   if(InpCheckLiquidity)
+   {
+      long volume = iVolume(Symbol(), PERIOD_CURRENT, 0);
+      if(volume < InpMinVolume)
+      {
+         Print("Insufficient liquidity: ", volume);
+         return false;
+      }
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Lot Size                                               |
+//+------------------------------------------------------------------+
+double CalculateLotSize(int riskLevel)
+{
+   if(InpFixedLotSize > 0)
+      return InpFixedLotSize;
+   
+   double lotSize = InpMinLotSize;
+   
+   if(InpUseATRSizing)
+   {
+      //--- Calculate based on account risk and ATR
+      double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double riskAmount = accountBalance * InpMaxRiskPercent / 100.0;
+      
+      double atr = iATR(Symbol(), PERIOD_CURRENT, 14, 0);
+      double slDistance = atr * InpATRMultiplier;
+      
+      double tickValue = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_VALUE);
+      double tickSize = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_SIZE);
+      
+      lotSize = (riskAmount / slDistance) * tickSize / tickValue;
+      
+      //--- Adjust for risk level (reduce size for high risk)
+      if(riskLevel >= 4)
+         lotSize *= 0.5;
+      else if(riskLevel >= 3)
+         lotSize *= 0.75;
+   }
+   
+   //--- Apply limits
+   lotSize = MathMax(lotSize, InpMinLotSize);
+   lotSize = MathMin(lotSize, InpMaxLotSize);
+   
+   //--- Round to lot step
+   double lotStep = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_STEP);
+   lotSize = MathFloor(lotSize / lotStep) * lotStep;
+   
+   return lotSize;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate SL and TP                                              |
+//+------------------------------------------------------------------+
+void CalculateSLTP(string signalType, double price, double &sl, double &tp)
+{
+   double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   
+   if(InpUseFixedSL && InpUseFixedTP)
+   {
+      double slDistance = InpSLPips * point * 10;
+      double tpDistance = InpTPPips * point * 10;
+      
+      if(signalType == "BUY")
+      {
+         sl = price - slDistance;
+         tp = price + tpDistance;
+      }
+      else
+      {
+         sl = price + slDistance;
+         tp = price - tpDistance;
+      }
+   }
+   else
+   {
+      //--- Use ATR-based SL/TP
+      double atr = iATR(Symbol(), PERIOD_CURRENT, 14, 0);
+      
+      if(signalType == "BUY")
+      {
+         sl = price - atr * InpATRMultiplier;
+         tp = price + atr * (InpATRMultiplier * 1.5);
+      }
+      else
+      {
+         sl = price + atr * InpATRMultiplier;
+         tp = price - atr * (InpATRMultiplier * 1.5);
+      }
+   }
+   
+   //--- Normalize prices
+   sl = NormalizeDouble(sl, _Digits);
+   tp = NormalizeDouble(tp, _Digits);
+}
+
+//+------------------------------------------------------------------+
+//| Open Paper Trade                                                 |
+//+------------------------------------------------------------------+
+void OpenPaperTrade(string signalType, double price, double lotSize, 
+                    double sl, double tp, int strength, int riskLevel)
+{
+   int newSize = ArraySize(positions) + 1;
+   ArrayResize(positions, newSize);
+   
+   positions[newSize-1].ticket = (ulong)MathRand();
+   positions[newSize-1].openTime = TimeCurrent();
+   positions[newSize-1].signalType = signalType;
+   positions[newSize-1].entryPrice = price;
+   positions[newSize-1].lotSize = lotSize;
+   positions[newSize-1].stopLoss = sl;
+   positions[newSize-1].takeProfit = tp;
+   positions[newSize-1].signalStrength = strength;
+   positions[newSize-1].riskLevel = riskLevel;
+   positions[newSize-1].breakEvenSet = false;
+   positions[newSize-1].partial1Done = false;
+   positions[newSize-1].partial2Done = false;
+   
+   stats.tradesOpened++;
+   stats.lastTradeTime = TimeCurrent();
+   
+   Print("📝 PAPER TRADE OPENED: ", signalType, " | Lots: ", lotSize, 
+         " | Price: ", price, " | SL: ", sl, " | TP: ", tp);
+   
+   if(InpLogAllTrades)
+      LogTrade("OPEN", positions[newSize-1]);
+}
+
+//+------------------------------------------------------------------+
+//| Open Real Trade                                                  |
+//+------------------------------------------------------------------+
+void OpenRealTrade(string signalType, double price, double lotSize, 
+                   double sl, double tp, int strength, int riskLevel)
+{
+   MqlTradeRequest request = {};
+   MqlTradeResult result = {};
+   
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = Symbol();
+   request.volume = lotSize;
+   request.type = (signalType == "BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   request.price = (signalType == "BUY") ? SymbolInfoDouble(Symbol(), SYMBOL_ASK) : 
+                                           SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   request.sl = sl;
+   request.tp = tp;
+   request.deviation = 10;
+   request.magic = 123456;
+   request.comment = "AutoTrade_" + IntegerToString(strength) + "_R" + IntegerToString(riskLevel);
+   
+   if(!OrderSend(request, result))
+   {
+      Print("❌ Order failed: ", GetLastError(), " | ", result.comment);
+      return;
+   }
+   
+   if(result.retcode == TRADE_RETCODE_DONE)
+   {
+      int newSize = ArraySize(positions) + 1;
+      ArrayResize(positions, newSize);
+      
+      positions[newSize-1].ticket = result.deal;
+      positions[newSize-1].openTime = TimeCurrent();
+      positions[newSize-1].signalType = signalType;
+      positions[newSize-1].entryPrice = result.price;
+      positions[newSize-1].lotSize = lotSize;
+      positions[newSize-1].stopLoss = sl;
+      positions[newSize-1].takeProfit = tp;
+      positions[newSize-1].signalStrength = strength;
+      positions[newSize-1].riskLevel = riskLevel;
+      positions[newSize-1].breakEvenSet = false;
+      positions[newSize-1].partial1Done = false;
+      positions[newSize-1].partial2Done = false;
+      
+      stats.tradesOpened++;
+      stats.lastTradeTime = TimeCurrent();
+      
+      Print("✅ TRADE OPENED: ", signalType, " | Ticket: ", result.deal, 
+            " | Lots: ", lotSize, " | Price: ", result.price);
+      
+      if(InpSendTradePush)
+         SendNotification(Symbol() + " " + signalType + " opened @ " + DoubleToString(result.price, _Digits));
+      
+      if(InpLogAllTrades)
+         LogTrade("OPEN", positions[newSize-1]);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Update Positions                                                  |
+//+------------------------------------------------------------------+
+void UpdatePositions()
+{
+   double currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   
+   for(int i = ArraySize(positions) - 1; i >= 0; i--)
+   {
+      //--- Calculate current pips
+      double priceDiff = currentPrice - positions[i].entryPrice;
+      if(positions[i].signalType == "SELL")
+         priceDiff = -priceDiff;
+      
+      positions[i].currentPips = priceDiff / (SymbolInfoDouble(Symbol(), SYMBOL_POINT) * 10);
+      
+      //--- Check breakeven
+      if(InpUseBreakeven && !positions[i].breakEvenSet && 
+         positions[i].currentPips >= InpBreakevenPips)
+      {
+         MoveToBreakeven(i);
+      }
+      
+      //--- Check partial TPs
+      if(InpUsePartialTP)
+      {
+         if(!positions[i].partial1Done && positions[i].currentPips >= InpPartial1Pips)
+            ClosePartialPosition(i, InpPartial1Percent, 1);
+         
+         if(!positions[i].partial2Done && positions[i].currentPips >= InpPartial2Pips)
+            ClosePartialPosition(i, InpPartial2Percent, 2);
+      }
+      
+      //--- Check trailing stop
+      if(InpUseTrailingStop && positions[i].currentPips >= InpTrailActivatePips)
+      {
+         UpdateTrailingStop(i);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Move to Breakeven                                                |
+//+------------------------------------------------------------------+
+void MoveToBreakeven(int index)
+{
+   double newSL = positions[index].entryPrice;
+   double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   
+   if(positions[index].signalType == "BUY")
+      newSL += InpBreakevenBuffer * point * 10;
+   else
+      newSL -= InpBreakevenBuffer * point * 10;
+   
+   positions[index].stopLoss = newSL;
+   positions[index].breakEvenSet = true;
+   
+   Print("✅ Breakeven set for position ", positions[index].ticket);
+}
+
+//+------------------------------------------------------------------+
+//| Close Partial Position                                           |
+//+------------------------------------------------------------------+
+void ClosePartialPosition(int index, double percent, int partialNum)
+{
+   Print("Partial TP", partialNum, " hit - ", percent, "% closed");
+   
+   if(partialNum == 1)
+      positions[index].partial1Done = true;
+   else
+      positions[index].partial2Done = true;
+}
+
+//+------------------------------------------------------------------+
+//| Update Trailing Stop                                             |
+//+------------------------------------------------------------------+
+void UpdateTrailingStop(int index)
+{
+   double currentPrice = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   double trailDistance = InpTrailDistancePips * point * 10;
+   
+   double newSL;
+   if(positions[index].signalType == "BUY")
+   {
+      newSL = currentPrice - trailDistance;
+      if(newSL > positions[index].stopLoss)
+         positions[index].stopLoss = newSL;
+   }
+   else
+   {
+      newSL = currentPrice + trailDistance;
+      if(newSL < positions[index].stopLoss)
+         positions[index].stopLoss = newSL;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check Daily Reset                                                |
+//+------------------------------------------------------------------+
+void CheckDailyReset()
+{
+   static datetime lastResetDate = 0;
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   datetime currentDate = StringToTime(IntegerToString(dt.year) + "." + 
+                                       IntegerToString(dt.mon) + "." + 
+                                       IntegerToString(dt.day));
+   
+   if(currentDate != lastResetDate)
+   {
+      stats.dailyPL = 0;
+      stats.limitReached = false;
+      lastResetDate = currentDate;
+      Print("Daily stats reset");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Log Trade                                                         |
+//+------------------------------------------------------------------+
+void LogTrade(string action, TradePosition &pos)
+{
+   string filename = "AutoTrades_" + Symbol() + ".csv";
+   int handle = FileOpen(filename, FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_READ, ",");
+   
+   if(handle == INVALID_HANDLE)
+      return;
+   
+   FileSeek(handle, 0, SEEK_END);
+   FileWrite(handle, TimeToString(TimeCurrent()), action, pos.signalType, 
+             DoubleToString(pos.entryPrice, _Digits), DoubleToString(pos.lotSize, 2),
+             DoubleToString(pos.stopLoss, _Digits), DoubleToString(pos.takeProfit, _Digits),
+             IntegerToString(pos.signalStrength), IntegerToString(pos.riskLevel));
+   
+   FileClose(handle);
+}
+
+//+------------------------------------------------------------------+
+//| Create Trading Panel                                             |
+//+------------------------------------------------------------------+
+void CreateTradingPanel()
+{
+   int width = 280;
+   int height = 220;
+   int x = InpPanelX;
+   int y = InpPanelY;
+   
+   CreateRect(objPrefix + "Panel", x, y, width, height, C'20,20,30');
+   CreateLabel(objPrefix + "Title", x + 10, y + 10, "AUTO TRADING", clrGold, 10, "Arial Bold");
+   
+   string modeText = InpPaperTradingMode ? "PAPER MODE" : "LIVE MODE";
+   color modeColor = InpPaperTradingMode ? clrDodgerBlue : clrRed;
+   CreateLabel(objPrefix + "Mode", x + 10, y + 30, modeText, modeColor, 9, "Arial Bold");
+   
+   int yPos = y + 55;
+   CreateRect(objPrefix + "Line1", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   yPos += 10;
+   CreateLabel(objPrefix + "OpenLabel", x + 15, yPos, "Open Positions:", clrWhite, 8, "Arial");
+   CreateLabel(objPrefix + "OpenValue", x + 150, yPos, "0", clrWhite, 9, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "TotalLabel", x + 15, yPos, "Total Trades:", clrWhite, 8, "Arial");
+   CreateLabel(objPrefix + "TotalValue", x + 150, yPos, "0", clrWhite, 8, "Arial");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "WRLabel", x + 15, yPos, "Win Rate:", clrWhite, 8, "Arial");
+   CreateLabel(objPrefix + "WRValue", x + 150, yPos, "0%", clrLimeGreen, 8, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "DailyLabel", x + 15, yPos, "Daily P/L:", clrWhite, 8, "Arial");
+   CreateLabel(objPrefix + "DailyValue", x + 150, yPos, "$0.00", clrWhite, 8, "Arial Bold");
+   
+   yPos += 20;
+   CreateLabel(objPrefix + "TotalPLLabel", x + 15, yPos, "Total P/L:", clrWhite, 8, "Arial");
+   CreateLabel(objPrefix + "TotalPLValue", x + 150, yPos, "$0.00", clrWhite, 9, "Arial Bold");
+   
+   yPos += 25;
+   CreateRect(objPrefix + "Line2", x + 10, yPos, width - 20, 1, clrDimGray);
+   
+   yPos += 10;
+   CreateLabel(objPrefix + "StatusLabel", x + 15, yPos, "Status:", clrWhite, 8, "Arial");
+   CreateLabel(objPrefix + "StatusValue", x + 80, yPos, "Ready", clrLimeGreen, 8, "Arial Bold");
+}
+
+//+------------------------------------------------------------------+
+//|

@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Miniature Enigma - Trading Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 20px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid #30363d;
+    }
+    .header h1 {
+      font-size: 1.5rem;
+      color: #58a6ff;
+    }
+    .status-badge {
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: bold;
+    }
+    .status-connected { background: #238636; }
+    .status-disconnected { background: #da3633; }
+    .status-emergency { background: #f85149; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #30363d;
+    }
+    .card-title { font-size: 0.9rem; color: #8b949e; text-transform: uppercase; }
+
+    .signals-list { max-height: 300px; overflow-y: auto; }
+    .signal-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px;
+      border-bottom: 1px solid #21262d;
+    }
+    .signal-item:hover { background: #21262d; }
+    .signal-long { color: #3fb950; }
+    .signal-short { color: #f85149; }
+    .signal-score { font-weight: bold; }
+
+    .position-item {
+      padding: 10px;
+      margin-bottom: 8px;
+      background: #21262d;
+      border-radius: 4px;
+    }
+    .position-long { border-left: 3px solid #3fb950; }
+    .position-short { border-left: 3px solid #f85149; }
+
+    .metric { display: flex; justify-content: space-between; padding: 6px 0; }
+    .metric-value { color: #58a6ff; font-weight: bold; }
+
+    .alert-item { padding: 10px; margin-bottom: 8px; border-radius: 4px; }
+    .alert-warning { background: rgba(210, 153, 34, 0.2); border-left: 3px solid #d29922; }
+    .alert-critical { background: rgba(248, 81, 73, 0.2); border-left: 3px solid #f85149; }
+    .alert-emergency { background: rgba(248, 81, 73, 0.4); border-left: 3px solid #f85149; animation: pulse 1s infinite; }
+
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.85rem;
+    }
+    .btn-danger { background: #da3633; color: white; }
+    .btn-success { background: #238636; color: white; }
+    .btn:hover { opacity: 0.9; }
+
+    .regime-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 0.75rem;
+      background: #30363d;
+    }
+    .regime-strong_trend_up { background: #238636; }
+    .regime-strong_trend_down { background: #da3633; }
+    .regime-ranging { background: #6e7681; }
+    .regime-high_volatility { background: #f0883e; }
+    .regime-breakout { background: #a371f7; }
+
+    .empty-state { color: #6e7681; text-align: center; padding: 20px; }
+    #lastUpdate { font-size: 0.75rem; color: #6e7681; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>MINIATURE ENIGMA</h1>
+    <div>
+      <span id="connectionStatus" class="status-badge status-disconnected">Disconnected</span>
+      <span id="lastUpdate">--</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Signals Card -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Top Signals</span>
+        <span id="signalCount">0</span>
+      </div>
+      <div class="signals-list" id="signalsList">
+        <div class="empty-state">Waiting for signals...</div>
+      </div>
+    </div>
+
+    <!-- Positions Card -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Open Positions</span>
+        <span id="positionCount">0</span>
+      </div>
+      <div id="positionsList">
+        <div class="empty-state">No open positions</div>
+      </div>
+    </div>
+
+    <!-- Metrics Card -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">System Metrics</span>
+      </div>
+      <div id="metricsList">
+        <div class="metric"><span>Total Scans</span><span class="metric-value" id="totalScans">0</span></div>
+        <div class="metric"><span>Avg Scan Time</span><span class="metric-value" id="avgScanTime">0ms</span></div>
+        <div class="metric"><span>Balance</span><span class="metric-value" id="balance">$0.00</span></div>
+        <div class="metric"><span>WebSocket</span><span class="metric-value" id="wsStatus">--</span></div>
+        <div class="metric"><span>Uptime</span><span class="metric-value" id="uptime">--</span></div>
+      </div>
+    </div>
+
+    <!-- Alerts Card -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Alerts</span>
+        <div>
+          <button class="btn btn-danger" onclick="emergencyStop()">STOP</button>
+          <button class="btn btn-success" onclick="resume()">Resume</button>
+        </div>
+      </div>
+      <div id="alertsList">
+        <div class="empty-state">No active alerts</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = 'http://localhost:3000';
+    const WS_URL = 'ws://localhost:3001';
+    let ws = null;
+
+    // Connect to WebSocket
+    function connect() {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        document.getElementById('connectionStatus').className = 'status-badge status-connected';
+        document.getElementById('connectionStatus').textContent = 'Connected';
+        console.log('WebSocket connected');
+      };
+
+      ws.onclose = () => {
+        document.getElementById('connectionStatus').className = 'status-badge status-disconnected';
+        document.getElementById('connectionStatus').textContent = 'Disconnected';
+        console.log('WebSocket disconnected, reconnecting...');
+        setTimeout(connect, 3000);
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'update') {
+          updateUI(data);
+        }
+      };
+    }
+
+    // Update UI with data
+    function updateUI(data) {
+      document.getElementById('lastUpdate').textContent =
+        'Updated: ' + new Date(data.timestamp).toLocaleTimeString();
+
+      // Update signals
+      if (data.signals && data.signals.length > 0) {
+        document.getElementById('signalCount').textContent = data.signals.length;
+        document.getElementById('signalsList').innerHTML = data.signals.map(s => `
+          <div class="signal-item">
+            <span class="signal-${s.direction}">${s.symbol}</span>
+            <span>${s.direction.toUpperCase()}</span>
+            <span class="signal-score">${s.score}</span>
+            <span>$${s.currentPrice?.toFixed(4) || '?'}</span>
+            ${s.regime ? `<span class="regime-badge regime-${s.regime.type}">${s.regime.type}</span>` : ''}
+          </div>
+        `).join('');
+      }
+
+      // Update positions
+      const positions = Object.entries(data.positions || {});
+      document.getElementById('positionCount').textContent = positions.length;
+      if (positions.length > 0) {
+        document.getElementById('positionsList').innerHTML = positions.map(([sym, pos]) => `
+          <div class="position-item position-${pos.direction}">
+            <div><strong>${sym}</strong> - ${pos.direction.toUpperCase()}</div>
+            <div>Entry: $${pos.entryPrice?.toFixed(4)} | Size: ${pos.size}</div>
+            <div>ROI: ${pos.currentROI?.toFixed(2) || '?'}%</div>
+          </div>
+        `).join('');
+      } else {
+        document.getElementById('positionsList').innerHTML = '<div class="empty-state">No open positions</div>';
+      }
+
+      // Update stats
+      if (data.stats) {
+        document.getElementById('totalScans').textContent = data.stats.totalScans || 0;
+        document.getElementById('avgScanTime').textContent = (data.stats.avgScanDuration || 0) + 'ms';
+      }
+    }
+
+    // Fetch initial data
+    async function fetchStatus() {
+      try {
+        const res = await fetch(API_URL + '/status');
+        const data = await res.json();
+
+        document.getElementById('balance').textContent = '$' + (data.balance || 0).toFixed(2);
+        document.getElementById('wsStatus').textContent = data.websocket ? 'LIVE' : 'REST';
+
+        if (data.production?.isEmergencyMode) {
+          document.getElementById('connectionStatus').className = 'status-badge status-emergency';
+          document.getElementById('connectionStatus').textContent = 'EMERGENCY';
+        }
+
+        updateUI({ signals: data.signals, positions: data.positions, timestamp: data.timestamp });
+      } catch (e) {
+        console.error('Failed to fetch status:', e);
+      }
+    }
+
+    // Emergency stop
+    async function emergencyStop() {
+      if (confirm('Are you sure you want to trigger emergency stop?')) {
+        await fetch(API_URL + '/emergency-stop', { method: 'POST' });
+        alert('Emergency stop triggered');
+      }
+    }
+
+    // Resume
+    async function resume() {
+      await fetch(API_URL + '/resume', { method: 'POST' });
+      alert('System resumed');
+    }
+
+    // Initialize
+    connect();
+    fetchStatus();
+    setInterval(fetchStatus, 10000);
+  </script>
+</body>
+</html>
