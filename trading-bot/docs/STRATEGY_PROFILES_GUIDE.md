@@ -177,7 +177,7 @@ The confidence threshold increases ensure:
 - Higher quality signals with better win rates
 - Reduced false positives during choppy markets
 - Better alignment with the bot's sophisticated multi-indicator system
-- Paradoxically, the Aggressive profile now has the HIGHEST confidence requirement, making it aggressive in position sizing but conservative in signal selection
+- Important: The Aggressive profile has the HIGHEST confidence requirement (90%), which may seem counterintuitive. This design ensures that when aggressive positions are taken (high leverage, large size), they are based on the most certain signals. The "aggressive" nature refers to position sizing and risk parameters, not signal quality thresholds.
 
 ### Backward Compatibility
 
