@@ -86,4 +86,9 @@ npm run walk-forward
 
 ---
 
-*Last Updated: 2026-01-16T20:39:00Z*
+*Last Updated: 2026-01-16T20:45:00Z*
+
+---
+
+## RESUME PROMPT
+When restarting, tell Claude: **"read memory and continue"**
