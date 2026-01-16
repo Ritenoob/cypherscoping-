@@ -14,12 +14,24 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Check for build system
+      id: check_build
+      run: |
+        if [ -f configure ] || [ -f configure.ac ] || [ -f configure.in ] || [ -f Makefile ] || [ -f CMakeLists.txt ]; then
+          echo "has_build_system=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_build_system=false" >> $GITHUB_OUTPUT
+          echo "::notice::No C/C++ build system detected. Skipping build steps."
+        fi
+
     - name: Set up Build Environment
+      if: steps.check_build.outputs.has_build_system == 'true'
       run: |
         sudo apt-get update
         sudo apt-get install -y autoconf automake libtool build-essential
 
     - name: Generate configure script if missing
+      if: steps.check_build.outputs.has_build_system == 'true'
       run: |
         if [ ! -x ./configure ]; then
           if [ -f configure.ac ] || [ -f configure.in ]; then
@@ -31,13 +43,17 @@ jobs:
         fi
 
     - name: configure
+      if: steps.check_build.outputs.has_build_system == 'true'
       run: ./configure
 
     - name: make
+      if: steps.check_build.outputs.has_build_system == 'true'
       run: make
 
     - name: make check
+      if: steps.check_build.outputs.has_build_system == 'true'
       run: make check
 
     - name: make distcheck
+      if: steps.check_build.outputs.has_build_system == 'true'
       run: make distcheck
