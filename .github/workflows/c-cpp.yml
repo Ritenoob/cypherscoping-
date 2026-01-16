@@ -17,8 +17,12 @@ jobs:
     - name: Check for build system
       id: check_build
       run: |
-        if [ -f configure ] || [ -f configure.ac ] || [ -f configure.in ] || [ -f Makefile ] || [ -f CMakeLists.txt ]; then
+        if [ -f configure ] || [ -f configure.ac ] || [ -f configure.in ] || [ -f Makefile ]; then
           echo "has_build_system=true" >> $GITHUB_OUTPUT
+          echo "build_type=autotools" >> $GITHUB_OUTPUT
+        elif [ -f CMakeLists.txt ]; then
+          echo "has_build_system=true" >> $GITHUB_OUTPUT
+          echo "build_type=cmake" >> $GITHUB_OUTPUT
         else
           echo "has_build_system=false" >> $GITHUB_OUTPUT
           echo "::notice::No C/C++ build system detected. Skipping build steps."
@@ -28,14 +32,19 @@ jobs:
       if: steps.check_build.outputs.has_build_system == 'true'
       run: |
         sudo apt-get update
-        sudo apt-get install -y autoconf automake libtool build-essential
+        if [ "${{ steps.check_build.outputs.build_type }}" = "cmake" ]; then
+          sudo apt-get install -y cmake build-essential
+        else
+          sudo apt-get install -y autoconf automake libtool build-essential
+        fi
 
     - name: Generate configure script if missing
-      if: steps.check_build.outputs.has_build_system == 'true'
+      if: steps.check_build.outputs.build_type == 'autotools'
       run: |
-        if [ ! -x ./configure ]; then
+        if [ ! -f ./configure ]; then
           if [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -i
+            chmod +x ./configure
           else
             echo "Error: No configure.ac or configure.in. Cannot generate ./configure."
             exit 1
@@ -43,7 +52,7 @@ jobs:
         fi
 
     - name: configure
-      if: steps.check_build.outputs.has_build_system == 'true'
+      if: steps.check_build.outputs.build_type == 'autotools'
       run: ./configure
 
     - name: make
@@ -55,5 +64,5 @@ jobs:
       run: make check
 
     - name: make distcheck
-      if: steps.check_build.outputs.has_build_system == 'true'
+      if: steps.check_build.outputs.build_type == 'autotools'
       run: make distcheck
