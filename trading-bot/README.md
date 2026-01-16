@@ -65,11 +65,11 @@ Signal classifications follow this schema: STRONG_BUY (≥70), BUY (≥30), NEUT
 
 Three pre-configured strategy profiles are available:
 
-**Conservative** - Capital preservation focus with tighter thresholds (min score 70, min confidence 60%, 5+ indicators agreeing), lower leverage (max 25x), and smaller positions (max 1% per trade).
+**Conservative** - Capital preservation focus with tighter thresholds (min score 70, min confidence 80%, 5+ indicators agreeing), lower leverage (max 25x), and smaller positions (max 1% per trade).
 
-**Neutral** - Balanced approach with moderate thresholds (min score 50, min confidence 40%, 4+ indicators agreeing), standard leverage (50x), and medium positions (max 2% per trade).
+**Neutral** - Balanced approach with moderate thresholds (min score 50, min confidence 85%, 4+ indicators agreeing), standard leverage (50x), and medium positions (max 2% per trade).
 
-**Aggressive** - Growth focus with looser thresholds (min score 40, min confidence 30%, 3+ indicators agreeing), higher leverage (max 100x), and larger positions (max 5% per trade).
+**Aggressive** - Growth focus with looser thresholds (min score 40, min confidence 90%, 3+ indicators agreeing), higher leverage (max 100x), and larger positions (max 5% per trade).
 
 ## Directory Structure
 

@@ -31,7 +31,7 @@ module.exports = {
   thresholds: {
     minScoreForEntry: 50,
     strongSignalThreshold: 70,
-    minConfidence: 40,
+    minConfidence: 85,
     minIndicatorsAgreeing: 4
   },
   
