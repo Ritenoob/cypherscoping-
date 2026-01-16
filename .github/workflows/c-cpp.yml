@@ -13,11 +13,31 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Set up Build Environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool build-essential
+
+    - name: Generate configure script if missing
+      run: |
+        if [ ! -x ./configure ]; then
+          if [ -f configure.ac ] || [ -f configure.in ]; then
+            autoreconf -i
+          else
+            echo "Error: No configure.ac or configure.in. Cannot generate ./configure."
+            exit 1
+          fi
+        fi
+
     - name: configure
       run: ./configure
+
     - name: make
       run: make
+
     - name: make check
       run: make check
+
     - name: make distcheck
       run: make distcheck
