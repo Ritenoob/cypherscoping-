@@ -22,10 +22,11 @@
     "monitor:auto": "node scripts/monitor.js --auto-tune --interval 60",
     "analyze": "node scripts/optimize.js --analyze",
     "validate": "node -e \"require('./config/apiCredentials').getCredentials().validateCredentials().then(v => console.log(v ? 'Valid' : 'Invalid'))\"",
-    "test": "node tests/indicators.test.js && node tests/microstructure.test.js && node tests/signalGenerator.test.js",
+    "test": "node tests/indicators.test.js && node tests/microstructure.test.js && node tests/signalGenerator.test.js && node tests/strategyProfiles.test.js",
     "test:indicators": "node tests/indicators.test.js",
     "test:microstructure": "node tests/microstructure.test.js",
     "test:signals": "node tests/signalGenerator.test.js",
+    "test:strategy-profiles": "node tests/strategyProfiles.test.js",
     "test:trading": "node tests/tradingEngine.test.js",
     "lint": "echo 'No linter configured'"
   },
