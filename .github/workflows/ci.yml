@@ -20,11 +20,22 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
+          cache-dependency-path: "trading-bot/package-lock.json"
 
       - name: Install dependencies
-        run: npm ci
+        working-directory: trading-bot
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f yarn.lock ]; then
+            yarn install --frozen-lockfile
+          else
+            echo "No lock file found. Exiting..."
+            exit 1
+          fi
 
       - name: Build (if present)
+        working-directory: trading-bot
         run: |
           if npm run -s | grep -qE '^  build'; then
             npm run build
