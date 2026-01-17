@@ -59,25 +59,29 @@ jobs:
             echo "::notice::If this is not a C/C++ autotools project, consider removing or disabling this workflow."
             # Don't fail - just skip configure step
           fi
-        fi
-
-    - name: configure
-      if: steps.check_build.outputs.build_type == 'autotools' && steps.check_build.outputs.needs_configure == 'true'
+    - name: Build and test (if autotools project is present)
       run: |
-        if [ -f ./configure ]; then
-          ./configure
-        else
-          echo "::notice::Skipping configure step - no configure script available."
+        # If there is no configure script or autotools input files,
+        # assume this repository does not contain a C/C++ autotools project.
+        if [ ! -x ./configure ] && [ ! -f configure.ac ] && [ ! -f configure.in ]; then
+          echo "No ./configure, configure.ac, or configure.in found. Skipping C/C++ build."
+          exit 0
         fi
 
-    - name: make
-      if: steps.check_build.outputs.has_build_system == 'true'
-      run: make
+        # Generate configure script if needed
+        if [ ! -x ./configure ]; then
+          echo "Found autotools input but no ./configure. Running autoreconf..."
+          autoreconf -i
+        fi
 
-    - name: make check
-      if: steps.check_build.outputs.has_build_system == 'true'
-      run: make check
+        echo "Running ./configure..."
+        ./configure
 
-    - name: make distcheck
-      if: steps.check_build.outputs.build_type == 'autotools'
-      run: make distcheck
+        echo "Running make..."
+        make
+
+        echo "Running make check..."
+        make check
+
+        echo "Running make distcheck..."
+        make distcheck
