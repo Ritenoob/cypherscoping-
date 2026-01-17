@@ -17,12 +17,18 @@ jobs:
     - name: Check for build system
       id: check_build
       run: |
-        if [ -f configure ] || [ -f configure.ac ] || [ -f configure.in ] || [ -f Makefile ]; then
+        if [ -f configure ] || [ -f configure.ac ] || [ -f configure.in ]; then
           echo "has_build_system=true" >> $GITHUB_OUTPUT
           echo "build_type=autotools" >> $GITHUB_OUTPUT
+          echo "needs_configure=true" >> $GITHUB_OUTPUT
+        elif [ -f Makefile ]; then
+          echo "has_build_system=true" >> $GITHUB_OUTPUT
+          echo "build_type=makefile" >> $GITHUB_OUTPUT
+          echo "needs_configure=false" >> $GITHUB_OUTPUT
         elif [ -f CMakeLists.txt ]; then
           echo "has_build_system=true" >> $GITHUB_OUTPUT
           echo "build_type=cmake" >> $GITHUB_OUTPUT
+          echo "needs_configure=false" >> $GITHUB_OUTPUT
         else
           echo "has_build_system=false" >> $GITHUB_OUTPUT
           echo "::notice::No C/C++ build system detected. Skipping build steps."
@@ -34,26 +40,35 @@ jobs:
         sudo apt-get update
         if [ "${{ steps.check_build.outputs.build_type }}" = "cmake" ]; then
           sudo apt-get install -y cmake build-essential
+        elif [ "${{ steps.check_build.outputs.build_type }}" = "makefile" ]; then
+          sudo apt-get install -y build-essential
         else
           sudo apt-get install -y autoconf automake libtool build-essential
         fi
 
     - name: Generate configure script if missing
-      if: steps.check_build.outputs.build_type == 'autotools'
+      if: steps.check_build.outputs.build_type == 'autotools' && steps.check_build.outputs.needs_configure == 'true'
       run: |
         if [ ! -f ./configure ]; then
           if [ -f configure.ac ] || [ -f configure.in ]; then
             autoreconf -i
             chmod +x ./configure
           else
-            echo "Error: No configure.ac or configure.in. Cannot generate ./configure."
-            exit 1
+            echo "::warning::This workflow is intended for C/C++ projects with autotools (configure.ac/configure.in)."
+            echo "::warning::No autoconf configuration files found. This repository may not require C/C++ build steps."
+            echo "::notice::If this is not a C/C++ autotools project, consider removing or disabling this workflow."
+            # Don't fail - just skip configure step
           fi
         fi
 
     - name: configure
-      if: steps.check_build.outputs.build_type == 'autotools'
-      run: ./configure
+      if: steps.check_build.outputs.build_type == 'autotools' && steps.check_build.outputs.needs_configure == 'true'
+      run: |
+        if [ -f ./configure ]; then
+          ./configure
+        else
+          echo "::notice::Skipping configure step - no configure script available."
+        fi
 
     - name: make
       if: steps.check_build.outputs.has_build_system == 'true'
