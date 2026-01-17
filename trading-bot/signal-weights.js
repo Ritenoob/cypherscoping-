@@ -1,18 +1,24 @@
 /**
- * Signal Weights Configuration V4 - OPTIMIZED 2026-01-15
+ * Signal Weights Configuration V5 - OPTIMIZED 2026-01-17
  *
- * TOP 5 INDICATORS (from multi-timeframe optimization):
- * 1. OBV (1hour): 72.5% WR, 4.34% ROI - SlopeWindow=7, Smoothing=3
- * 2. Bollinger (15min): 86.1% WR, 2.88% ROI - Period=15, StdDev=2
- * 3. Williams %R (30min): 62.9% WR, 2.99% ROI - Period=10, OS=-90, OB=-10
- * 4. AO (15min): 70.0% WR, 2.91% ROI - Fast=3, Slow=34
- * 5. MACD (1hour): 36.5% WR, 3.25% ROI - Fast=5, Slow=17, Signal=5
+ * TOP INDICATORS (from individual indicator backtests on KuCoin Futures data):
+ * 1. Stochastic (1hour): 66.7% WR, PF 3.72 - kPeriod=14, dPeriod=3
+ * 2. RSI (15min): 60.9% WR, PF 2.81 - Period=21 (better than 14!)
+ * 3. KDJ (5min): 57.1% WR, PF 2.79 - j_oversold has 80% WR ($1739 PnL)
+ * 4. Williams %R (30min): 64.7% WR, PF 2.76 - Period=10, OS=-90, OB=-10
+ * 5. Bollinger (5min): 54.3% WR, PF 1.71 - Period=15, StdDev=2
  *
- * MTF Alignment: DISABLED (single timeframe mode)
- * ATR Enhancements: ENABLED (dynamic SL/TP)
- * 9th Level Entry: ENABLED (order book precision)
+ * REDUCED WEIGHTS (underperformers):
+ * - MACD: PF 1.30, 42.6% WR (weight reduced)
+ * - OBV: PF 1.29, 36.8% WR (weight reduced)
  *
- * Total indicator weight: 180 (capped at ±120)
+ * ENHANCEMENTS:
+ * - Added regular Stochastic indicator (top performer)
+ * - Added extreme MA divergence signals for mean reversion
+ * - RSI integrated with StochRSI for K/D crossovers
+ * - KDJ j_oversold/j_overbought signal weighting
+ *
+ * Total indicator weight: ~220 (capped at ±120)
  * Total microstructure weight: 60 (capped at ±30)
  * Final score range: -150 to +150
  */
@@ -27,28 +33,38 @@ const envBool = (key, defaultVal = true) => {
 module.exports = {
   // Technical Indicators (10 total) - OPTIMIZED 2026-01-14
   indicators: {
-    // RSI: BEST performer - 71.1% win rate
-    // Divergence is king, crossovers are gold
+    // RSI: BEST performer - Enhanced with StochRSI integration
+    // Divergence is king, StochRSI crossovers are gold
     rsi: {
-      maxWeight: 35,  // Increased from 30
+      maxWeight: 40,  // Increased for enhanced signals
       enabled: envBool('INDICATOR_RSI_ENABLED', true),
       signals: {
-        crossover: { weight: 1.4, priority: 2 },     // Increased
-        divergence: { weight: 1.8, priority: 1 },    // HIGHEST - divergence is most predictive
-        momentum: { weight: 0.6, priority: 4 },      // Decreased - less reliable
-        zone: { weight: 0.5, priority: 5 }           // Decreased - zones alone are weak
+        crossover: { weight: 1.4, priority: 2 },           // RSI midline crossover
+        divergence: { weight: 1.8, priority: 1 },          // Regular divergence
+        hidden_divergence: { weight: 2.0, priority: 1 },   // NEW: Hidden divergence (continuation)
+        stochrsi_crossover: { weight: 1.6, priority: 2 },  // NEW: StochRSI K/D crossover
+        failure_swing: { weight: 1.7, priority: 1 },       // NEW: Failure swing patterns
+        adaptive_zone: { weight: 0.8, priority: 4 },       // NEW: Adaptive threshold zones
+        momentum: { weight: 0.6, priority: 4 },
+        zone: { weight: 0.4, priority: 5 }                 // Base zones are weak
       }
     },
 
-    // MACD: TOP 5 on 1hour (3.25% ROI) - Fast=5, Slow=17, Signal=5
+    // MACD: Underperformer in backtests - PF 1.30, 42.6% WR
+    // Reduced weight - divergence and impulse are still valuable
     macd: {
-      maxWeight: 20,  // Increased - good on 1hour TF
-      enabled: envBool('INDICATOR_MACD_ENABLED', true),  // ENABLED
+      maxWeight: 18,  // Reduced from 25 - underperformed
+      enabled: envBool('INDICATOR_MACD_ENABLED', true),
       signals: {
-        signal_crossover: { weight: 1.0, priority: 2 },
-        zero_crossover: { weight: 0.8, priority: 3 },
-        histogram: { weight: 0.6, priority: 4 },
-        divergence: { weight: 1.4, priority: 1 }
+        signal_crossover: { weight: 0.8, priority: 3 },
+        zero_crossover: { weight: 0.7, priority: 3 },
+        histogram: { weight: 0.5, priority: 4 },
+        divergence: { weight: 1.4, priority: 1 },            // Still valuable
+        hidden_divergence: { weight: 1.6, priority: 1 },
+        impulse: { weight: 1.2, priority: 2 },
+        histogram_color_change: { weight: 0.8, priority: 3 },
+        convergence: { weight: 1.0, priority: 3 },
+        signal_line_slope: { weight: 0.5, priority: 4 }
       }
     },
 
@@ -76,26 +92,47 @@ module.exports = {
       }
     },
 
-    // EMA Trend: High win rate when triggered, but fewer signals
+    // EMA Trend: Enhanced V2 with extreme MA divergence signals
+    // NEW: Mean reversion signals when price diverges >3-5% from key MAs
     emaTrend: {
-      maxWeight: 18,  // Increased
+      maxWeight: 25,  // Increased for extreme divergence signals
       enabled: envBool('INDICATOR_EMA_ENABLED', true),
       signals: {
         ema_cross: { weight: 1.2, priority: 2 },
         golden_death_cross: { weight: 1.5, priority: 1 },  // Very reliable
         trend_direction: { weight: 0.8, priority: 3 },
-        slope: { weight: 0.6, priority: 4 }
+        slope: { weight: 0.6, priority: 4 },
+        // NEW: Extreme MA divergence (mean reversion)
+        extreme_oversold_200: { weight: 2.0, priority: 1 },  // >5% below 200 EMA
+        extreme_oversold_100: { weight: 1.7, priority: 1 },  // >4% below 100 EMA
+        extreme_oversold_50: { weight: 1.4, priority: 2 },   // >3% below 50 EMA
+        extreme_overbought_200: { weight: 2.0, priority: 1 },
+        extreme_overbought_100: { weight: 1.7, priority: 1 },
+        extreme_overbought_50: { weight: 1.4, priority: 2 }
       }
     },
 
-    // Stochastic RSI: KuCoin style
+    // Stochastic: TOP PERFORMER - PF 3.72, 66.7% WR on 1hour
+    // Best configuration: kPeriod=14, dPeriod=3, smooth=3
+    stochastic: {
+      maxWeight: 35,  // HIGHEST - top performer from backtests
+      enabled: envBool('INDICATOR_STOCHASTIC_ENABLED', true),
+      signals: {
+        kd_crossover: { weight: 1.5, priority: 1 },      // K/D crossover is key
+        oversold_zone: { weight: 1.8, priority: 1 },     // 100% WR in backtest!
+        overbought_zone: { weight: 1.6, priority: 1 },   // 66.7% WR
+        divergence: { weight: 2.0, priority: 1 }         // Highest value
+      }
+    },
+
+    // Stochastic RSI: KuCoin style (good but Stochastic is better)
     stochRSI: {
-      maxWeight: 18,  // Increased from 15
+      maxWeight: 18,
       enabled: envBool('INDICATOR_STOCHRSI_ENABLED', true),
       signals: {
         kd_crossover: { weight: 1.2, priority: 2 },
-        zone: { weight: 0.5, priority: 4 },           // Decreased
-        divergence: { weight: 1.6, priority: 1 }      // Increased
+        zone: { weight: 0.5, priority: 4 },
+        divergence: { weight: 1.6, priority: 1 }
       }
     },
 
@@ -111,25 +148,29 @@ module.exports = {
       }
     },
 
-    // KDJ: Good - 63.9% win rate (2nd best)
+    // KDJ: TOP PERFORMER #3 - PF 2.79, 57.1% WR
+    // KEY FINDING: j_oversold signals have 80% WR and $1739 PnL!
     kdj: {
-      maxWeight: 25,  // Increased from 18
+      maxWeight: 35,  // Significantly increased - j_oversold is gold
       enabled: envBool('INDICATOR_KDJ_ENABLED', true),
       signals: {
+        j_oversold: { weight: 2.0, priority: 1 },     // 80% WR - BEST signal
+        j_overbought: { weight: 1.5, priority: 1 },   // 42.9% WR
         j_line: { weight: 1.3, priority: 2 },
         kd_cross: { weight: 1.0, priority: 3 },
-        divergence: { weight: 1.6, priority: 1 }      // Increased
+        divergence: { weight: 1.8, priority: 1 }      // Strong
       }
     },
 
-    // OBV: TOP 5 #1 on 1hour (72.5% WR, 4.34% ROI) - SlopeWindow=7, Smoothing=3
+    // OBV: Underperformer in backtests - PF 1.29, 36.8% WR
+    // Reduced weight - keep for volume confirmation only
     obv: {
-      maxWeight: 35,  // HIGHEST ROI performer
+      maxWeight: 18,  // Reduced from 35 - underperformed
       enabled: envBool('INDICATOR_OBV_ENABLED', true),
       signals: {
-        slope: { weight: 1.2, priority: 2 },
-        breakout: { weight: 1.4, priority: 2 },
-        divergence: { weight: 1.8, priority: 1 }  // OBV divergence is powerful
+        slope: { weight: 1.0, priority: 3 },
+        breakout: { weight: 1.2, priority: 3 },
+        divergence: { weight: 1.5, priority: 2 }  // Still useful for confirmation
       }
     },
 
@@ -155,6 +196,20 @@ module.exports = {
         bullish_adx_trend: { weight: 1.4, priority: 2 },
         bearish_adx_trend: { weight: 1.4, priority: 2 },
         adx_strengthening: { weight: 1.2, priority: 3 }
+      }
+    },
+
+    // ATR: Volatility Measurement - NEW
+    // Used for position sizing and volatility-based entries
+    atr: {
+      maxWeight: 15,
+      enabled: envBool('INDICATOR_ATR_ENABLED', true),
+      signals: {
+        extreme_volatility: { weight: 0.5, priority: 3 },      // Caution - reduce size
+        volatility_expansion: { weight: 0.8, priority: 3 },
+        volatility_contraction: { weight: 1.0, priority: 2 },  // Squeeze forming
+        low_volatility_squeeze: { weight: 1.5, priority: 1 },  // Breakout imminent!
+        atr_breakout: { weight: 1.3, priority: 2 }             // Volatility explosion
       }
     }
   },

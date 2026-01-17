@@ -1,12 +1,16 @@
 /**
- * ADX Indicator - Average Directional Index for Trend Strength
- * Based on MQL5 frameworks from truth docs
+ * ADX Indicator - ENHANCED V2 with Trend Quality Analysis
+ *
+ * ENHANCEMENTS (2026-01-16):
+ * - DI crossover with ADX confirmation
+ * - ADX turning point detection (trend exhaustion)
+ * - Trend quality scoring
+ * - Hook reversal patterns
+ * - ADX slope analysis for trend acceleration
+ * - Regime change detection
  *
  * KEY: ADX > 25 = Strong Trend (use trend strategy)
  *      ADX <= 25 = Ranging Market (use range strategy)
- *
- * This achieved 78%+ win rate in backtests by filtering
- * trend vs range conditions before entry.
  */
 
 class ADXIndicator {
@@ -34,10 +38,17 @@ class ADXIndicator {
     this.currentPlusDI = null;
     this.currentMinusDI = null;
     this.prevADX = null;
+    this.prevPlusDI = null;
+    this.prevMinusDI = null;
 
     this.adxHistory = [];
-    this.maxHistory = config.historyLength || 50;
+    this.plusDIHistory = [];
+    this.minusDIHistory = [];
+    this.maxHistory = config.historyLength || 100;
     this.candleCount = 0;
+
+    // For regime tracking
+    this.prevRegime = null;
   }
 
   update(candle) {
@@ -45,6 +56,8 @@ class ADXIndicator {
 
     this.candleCount++;
     this.prevADX = this.currentADX;
+    this.prevPlusDI = this.currentPlusDI;
+    this.prevMinusDI = this.currentMinusDI;
 
     // Store history
     this.highHistory.push(high);
@@ -125,49 +138,60 @@ class ADXIndicator {
 
     // Store history
     this.adxHistory.push(this.currentADX);
+    if (this.currentPlusDI !== null) this.plusDIHistory.push(this.currentPlusDI);
+    if (this.currentMinusDI !== null) this.minusDIHistory.push(this.currentMinusDI);
+
     if (this.adxHistory.length > this.maxHistory) {
       this.adxHistory.shift();
+      this.plusDIHistory.shift();
+      this.minusDIHistory.shift();
     }
 
     return this.getResult();
   }
 
+  // SIGNAL 1: Market Regime Detection
   getRegime() {
     if (this.currentADX === null) return null;
 
-    // Key logic from truth docs: ADX determines trend vs range
+    let regime;
     if (this.currentADX >= this.strongTrendThreshold) {
-      return {
+      regime = {
         type: 'strong_trend',
         mode: 'trend',
         strength: 'very_strong',
         message: `Strong trend detected (ADX: ${this.currentADX.toFixed(1)})`,
         metadata: { adx: this.currentADX, threshold: this.strongTrendThreshold }
       };
-    }
-
-    if (this.currentADX >= this.trendThreshold) {
-      return {
+    } else if (this.currentADX >= this.trendThreshold) {
+      regime = {
         type: 'trend',
         mode: 'trend',
         strength: 'strong',
         message: `Trending market (ADX: ${this.currentADX.toFixed(1)})`,
         metadata: { adx: this.currentADX, threshold: this.trendThreshold }
       };
+    } else {
+      regime = {
+        type: 'range',
+        mode: 'range',
+        strength: 'moderate',
+        message: `Ranging/sideways market (ADX: ${this.currentADX.toFixed(1)})`,
+        metadata: { adx: this.currentADX, threshold: this.trendThreshold }
+      };
     }
 
-    return {
-      type: 'range',
-      mode: 'range',
-      strength: 'moderate',
-      message: `Ranging/sideways market (ADX: ${this.currentADX.toFixed(1)})`,
-      metadata: { adx: this.currentADX, threshold: this.trendThreshold }
-    };
+    // Only return if in trend mode
+    if (regime.mode === 'trend') {
+      return regime;
+    }
+    return null;
   }
 
+  // SIGNAL 2: Trend Direction
   getTrendDirection() {
     if (this.currentPlusDI === null || this.currentMinusDI === null) return null;
-    if (this.currentADX < this.trendThreshold) return null; // Only in trend mode
+    if (this.currentADX < this.trendThreshold) return null;
 
     if (this.currentPlusDI > this.currentMinusDI) {
       return {
@@ -192,36 +216,45 @@ class ADXIndicator {
     return null;
   }
 
+  // SIGNAL 3: DI Crossover (enhanced with ADX confirmation)
   getDICrossover() {
-    if (this.adxHistory.length < 2) return null;
+    if (this.prevPlusDI === null || this.prevMinusDI === null) return null;
     if (this.currentPlusDI === null || this.currentMinusDI === null) return null;
 
-    // This is a simplified crossover - in production you'd track previous DI values
-    const diDiff = this.currentPlusDI - this.currentMinusDI;
+    // Bullish DI crossover: +DI crosses above -DI
+    if (this.prevPlusDI <= this.prevMinusDI && this.currentPlusDI > this.currentMinusDI) {
+      const adxConfirm = this.currentADX >= this.trendThreshold;
+      const adxRising = this.adxHistory.length >= 3 &&
+        this.adxHistory[this.adxHistory.length - 1] > this.adxHistory[this.adxHistory.length - 3];
 
-    if (diDiff > 10 && this.currentADX >= this.trendThreshold) {
       return {
-        type: 'bullish_di_dominance',
+        type: 'bullish_di_crossover',
         direction: 'bullish',
-        strength: 'strong',
-        message: `+DI dominant in trend (diff: ${diDiff.toFixed(1)})`,
-        metadata: { plusDI: this.currentPlusDI, minusDI: this.currentMinusDI }
+        strength: (adxConfirm && adxRising) ? 'very_strong' : (adxConfirm ? 'strong' : 'moderate'),
+        message: `+DI crossed above -DI${adxConfirm ? ' (ADX confirms)' : ''}${adxRising ? ' (ADX rising)' : ''}`,
+        metadata: { plusDI: this.currentPlusDI, minusDI: this.currentMinusDI, adx: this.currentADX, adxConfirm, adxRising }
       };
     }
 
-    if (diDiff < -10 && this.currentADX >= this.trendThreshold) {
+    // Bearish DI crossover: -DI crosses above +DI
+    if (this.prevMinusDI <= this.prevPlusDI && this.currentMinusDI > this.currentPlusDI) {
+      const adxConfirm = this.currentADX >= this.trendThreshold;
+      const adxRising = this.adxHistory.length >= 3 &&
+        this.adxHistory[this.adxHistory.length - 1] > this.adxHistory[this.adxHistory.length - 3];
+
       return {
-        type: 'bearish_di_dominance',
+        type: 'bearish_di_crossover',
         direction: 'bearish',
-        strength: 'strong',
-        message: `-DI dominant in trend (diff: ${Math.abs(diDiff).toFixed(1)})`,
-        metadata: { plusDI: this.currentPlusDI, minusDI: this.currentMinusDI }
+        strength: (adxConfirm && adxRising) ? 'very_strong' : (adxConfirm ? 'strong' : 'moderate'),
+        message: `-DI crossed above +DI${adxConfirm ? ' (ADX confirms)' : ''}${adxRising ? ' (ADX rising)' : ''}`,
+        metadata: { plusDI: this.currentPlusDI, minusDI: this.currentMinusDI, adx: this.currentADX, adxConfirm, adxRising }
       };
     }
 
     return null;
   }
 
+  // SIGNAL 4: ADX Strengthening/Weakening
   getADXStrengthening() {
     if (this.adxHistory.length < 5) return null;
 
@@ -229,14 +262,150 @@ class ADXIndicator {
     const slope = (recent[4] - recent[0]) / 4;
 
     // ADX rising while above threshold = strengthening trend
-    if (slope > 1 && this.currentADX >= this.trendThreshold) {
+    if (slope > 1.5 && this.currentADX >= this.trendThreshold) {
       const direction = this.currentPlusDI > this.currentMinusDI ? 'bullish' : 'bearish';
       return {
         type: `${direction}_adx_strengthening`,
         direction: direction,
         strength: 'strong',
         message: `Trend strengthening (ADX slope: +${slope.toFixed(1)})`,
+        metadata: { slope, adx: this.currentADX, direction }
+      };
+    }
+
+    // ADX falling while still in trend = weakening trend (potential reversal)
+    if (slope < -1.5 && this.currentADX >= this.trendThreshold) {
+      const direction = this.currentPlusDI > this.currentMinusDI ? 'bearish' : 'bullish';
+      return {
+        type: `trend_weakening`,
+        direction: direction,
+        strength: 'moderate',
+        message: `Trend weakening (ADX slope: ${slope.toFixed(1)}) - potential reversal`,
         metadata: { slope, adx: this.currentADX }
+      };
+    }
+
+    return null;
+  }
+
+  // SIGNAL 5: ADX Turning Point Detection - NEW!
+  getADXTurningPoint() {
+    if (this.adxHistory.length < 6) return null;
+
+    const recent = this.adxHistory.slice(-6);
+
+    // ADX peaked and now falling (trend exhaustion)
+    if (recent[2] > recent[0] && recent[2] > recent[1] &&
+        recent[2] > recent[3] && recent[2] > recent[4] &&
+        recent[2] > this.strongTrendThreshold) {
+      const direction = this.currentPlusDI > this.currentMinusDI ? 'bearish' : 'bullish';
+      return {
+        type: 'adx_peak_reversal',
+        direction: direction,
+        strength: 'moderate',
+        message: `ADX peaked and falling (trend exhaustion warning)`,
+        metadata: { peak: recent[2], current: this.currentADX }
+      };
+    }
+
+    // ADX bottomed and now rising (new trend starting)
+    if (recent[2] < recent[0] && recent[2] < recent[1] &&
+        recent[2] < recent[3] && recent[2] < recent[4] &&
+        recent[2] < this.trendThreshold && this.currentADX > recent[2]) {
+      const direction = this.currentPlusDI > this.currentMinusDI ? 'bullish' : 'bearish';
+      return {
+        type: 'adx_bottom_reversal',
+        direction: direction,
+        strength: 'moderate',
+        message: `ADX bottomed and rising (new trend emerging)`,
+        metadata: { bottom: recent[2], current: this.currentADX, direction }
+      };
+    }
+
+    return null;
+  }
+
+  // SIGNAL 6: Regime Change Detection - NEW!
+  getRegimeChange() {
+    if (this.prevADX === null) return null;
+
+    const currentRegime = this.currentADX >= this.trendThreshold ? 'trend' : 'range';
+
+    // Transition from range to trend
+    if (this.prevADX < this.trendThreshold && this.currentADX >= this.trendThreshold) {
+      const direction = this.currentPlusDI > this.currentMinusDI ? 'bullish' : 'bearish';
+      return {
+        type: 'regime_to_trend',
+        direction: direction,
+        strength: 'strong',
+        message: `Market shifted from ranging to trending (${direction})`,
+        metadata: { prevADX: this.prevADX, currentADX: this.currentADX, direction }
+      };
+    }
+
+    // Transition from trend to range
+    if (this.prevADX >= this.trendThreshold && this.currentADX < this.trendThreshold) {
+      return {
+        type: 'regime_to_range',
+        direction: 'neutral',
+        strength: 'moderate',
+        message: 'Market shifted from trending to ranging (avoid trend strategies)',
+        metadata: { prevADX: this.prevADX, currentADX: this.currentADX }
+      };
+    }
+
+    return null;
+  }
+
+  // SIGNAL 7: DI Separation (Trend Quality) - NEW!
+  getDISeparation() {
+    if (this.currentPlusDI === null || this.currentMinusDI === null) return null;
+    if (this.currentADX < this.trendThreshold) return null;
+
+    const separation = Math.abs(this.currentPlusDI - this.currentMinusDI);
+
+    // Very wide DI separation = high quality trend
+    if (separation > 20 && this.currentADX >= this.trendThreshold) {
+      const direction = this.currentPlusDI > this.currentMinusDI ? 'bullish' : 'bearish';
+      return {
+        type: `${direction}_strong_separation`,
+        direction: direction,
+        strength: 'strong',
+        message: `Strong DI separation (${separation.toFixed(1)}) - high quality ${direction} trend`,
+        metadata: { plusDI: this.currentPlusDI, minusDI: this.currentMinusDI, separation, adx: this.currentADX }
+      };
+    }
+
+    return null;
+  }
+
+  // SIGNAL 8: ADX Hook Pattern - NEW!
+  getADXHook() {
+    if (this.adxHistory.length < 4) return null;
+
+    const recent = this.adxHistory.slice(-4);
+
+    // Bullish ADX hook: ADX was falling, now turning up below threshold
+    if (recent[0] > recent[1] && recent[1] > recent[2] && recent[3] > recent[2] &&
+        recent[2] < this.trendThreshold && this.currentPlusDI > this.currentMinusDI) {
+      return {
+        type: 'bullish_adx_hook',
+        direction: 'bullish',
+        strength: 'moderate',
+        message: 'ADX hook turning up (potential new bullish trend)',
+        metadata: { values: recent, hookPoint: recent[2] }
+      };
+    }
+
+    // Bearish ADX hook: ADX was falling, now turning up below threshold
+    if (recent[0] > recent[1] && recent[1] > recent[2] && recent[3] > recent[2] &&
+        recent[2] < this.trendThreshold && this.currentMinusDI > this.currentPlusDI) {
+      return {
+        type: 'bearish_adx_hook',
+        direction: 'bearish',
+        strength: 'moderate',
+        message: 'ADX hook turning up (potential new bearish trend)',
+        metadata: { values: recent, hookPoint: recent[2] }
       };
     }
 
@@ -247,18 +416,28 @@ class ADXIndicator {
     const signals = [];
 
     const regime = this.getRegime();
-    if (regime && regime.mode === 'trend') {
-      signals.push(regime);
-    }
+    if (regime) signals.push(regime);
 
-    const trendDir = this.getTrendDirection();
-    if (trendDir) signals.push(trendDir);
+    const regimeChange = this.getRegimeChange();
+    if (regimeChange) signals.push(regimeChange);
 
     const diCross = this.getDICrossover();
     if (diCross) signals.push(diCross);
 
+    const trendDir = this.getTrendDirection();
+    if (trendDir) signals.push(trendDir);
+
     const strengthening = this.getADXStrengthening();
     if (strengthening) signals.push(strengthening);
+
+    const turningPoint = this.getADXTurningPoint();
+    if (turningPoint) signals.push(turningPoint);
+
+    const separation = this.getDISeparation();
+    if (separation) signals.push(separation);
+
+    const hook = this.getADXHook();
+    if (hook) signals.push(hook);
 
     return signals;
   }
@@ -271,7 +450,9 @@ class ADXIndicator {
         adx: this.currentADX,
         plusDI: this.currentPlusDI,
         minusDI: this.currentMinusDI,
-        regime: regime ? regime.mode : null,
+        diSeparation: this.currentPlusDI && this.currentMinusDI ?
+          Math.abs(this.currentPlusDI - this.currentMinusDI) : null,
+        regime: regime ? regime.mode : (this.currentADX < this.trendThreshold ? 'range' : null),
         isTrending: this.currentADX >= this.trendThreshold,
         trendStrength: this.currentADX
       },
@@ -294,8 +475,13 @@ class ADXIndicator {
     this.currentPlusDI = null;
     this.currentMinusDI = null;
     this.prevADX = null;
+    this.prevPlusDI = null;
+    this.prevMinusDI = null;
     this.adxHistory = [];
+    this.plusDIHistory = [];
+    this.minusDIHistory = [];
     this.candleCount = 0;
+    this.prevRegime = null;
   }
 }
 

@@ -17,6 +17,7 @@ const DOMAnalyzer = require('./DOMAnalyzer');
 const VolumeRatioIndicator = require('./VolumeRatioIndicator');
 const PumpAlertIndicator = require('./PumpAlertIndicator');
 const ADXIndicator = require('./ADXIndicator');
+const ATRIndicator = require('./ATRIndicator');
 
 module.exports = {
   RSIIndicator,
@@ -32,5 +33,6 @@ module.exports = {
   DOMAnalyzer,
   VolumeRatioIndicator,
   PumpAlertIndicator,
-  ADXIndicator
+  ADXIndicator,
+  ATRIndicator
 };
