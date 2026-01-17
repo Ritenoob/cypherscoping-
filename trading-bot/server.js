@@ -22,6 +22,10 @@ const { BuySellRatioAnalyzer, PriceRatioAnalyzer, FundingRateAnalyzer } = requir
 const { PaperTradingEngine, PaperTradingEngineV2 } = require('./src/optimizer');
 const SignalGeneratorV2 = require('./src/lib/SignalGeneratorV2');
 
+// Cloud AI Integration (optional)
+const cloudConfig = require('./config/cloudConfig');
+const { CloudOrchestrator } = require('./src/cloud');
+
 class TradingServer extends EventEmitter {
   constructor(config = {}) {
     super();
@@ -31,6 +35,9 @@ class TradingServer extends EventEmitter {
     
     this.screener = null;
     this.paperTrader = null;
+    
+    // Cloud orchestrator (optional)
+    this.cloudOrchestrator = null;
     
     this.buySellAnalyzer = new BuySellRatioAnalyzer();
     this.priceRatioAnalyzer = new PriceRatioAnalyzer();
@@ -75,6 +82,20 @@ class TradingServer extends EventEmitter {
       this.buySellAnalyzer.enableLiveMode();
       this.priceRatioAnalyzer.enableLiveMode();
       this.fundingAnalyzer.enableLiveMode();
+    }
+    
+    // NEW: Initialize cloud services if enabled
+    if (cloudConfig.enabled) {
+      try {
+        console.log('[Server] Initializing cloud AI services...');
+        this.cloudOrchestrator = new CloudOrchestrator(cloudConfig);
+        await this.cloudOrchestrator.initialize();
+        console.log('[Server] Cloud AI services enabled');
+      } catch (err) {
+        console.error('[Server] Failed to initialize cloud services:', err.message);
+        console.log('[Server] Continuing without cloud features');
+        this.cloudOrchestrator = null;
+      }
     }
     
     console.log('[Server] Initialized');
@@ -175,6 +196,26 @@ class TradingServer extends EventEmitter {
         
       case '/api/paper-trading':
         this._servePaperTrading(res);
+        break;
+        
+      case '/api/cloud/status':
+        this._serveCloudStatus(res);
+        break;
+        
+      case '/api/cloud/analyze':
+        this._handleCloudAnalyze(req, res);
+        break;
+        
+      case '/api/cloud/chat':
+        this._handleCloudChat(req, res);
+        break;
+        
+      case '/api/cloud/quota':
+        this._serveCloudQuota(res);
+        break;
+        
+      case '/api/cloud/optimize':
+        this._handleCloudOptimize(req, res);
         break;
         
       default:
@@ -278,6 +319,127 @@ class TradingServer extends EventEmitter {
       strategies: results,
       best
     }));
+  }
+
+  _serveCloudStatus(res) {
+    if (!this.cloudOrchestrator) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        enabled: false,
+        message: 'Cloud features disabled'
+      }));
+      return;
+    }
+
+    const status = this.cloudOrchestrator.getStatus();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(status));
+  }
+
+  async _handleCloudAnalyze(req, res) {
+    if (!this.cloudOrchestrator) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cloud features disabled' }));
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const signalData = JSON.parse(body);
+        const analysis = await this.cloudOrchestrator.analyzeSignal(signalData);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(analysis));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+    });
+  }
+
+  async _handleCloudChat(req, res) {
+    if (!this.cloudOrchestrator) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cloud features disabled' }));
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { query, context } = JSON.parse(body);
+        const response = await this.cloudOrchestrator.processQuery(query, context || {});
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(response));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+    });
+  }
+
+  _serveCloudQuota(res) {
+    if (!this.cloudOrchestrator) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cloud features disabled' }));
+      return;
+    }
+
+    const status = this.cloudOrchestrator.getStatus();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      usage: status.usage,
+      metrics: this.cloudOrchestrator.getMetrics()
+    }));
+  }
+
+  async _handleCloudOptimize(req, res) {
+    if (!this.cloudOrchestrator) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cloud features disabled' }));
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { performanceData, currentWeights, recentTrades } = JSON.parse(body);
+        const recommendations = await this.cloudOrchestrator.optimizeStrategy(
+          performanceData, 
+          currentWeights, 
+          recentTrades
+        );
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(recommendations));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+    });
   }
 }
 
