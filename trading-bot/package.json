@@ -29,6 +29,8 @@
     "test:signals": "node tests/signalGenerator.test.js",
     "test:strategy-profiles": "node tests/strategyProfiles.test.js",
     "test:trading": "node tests/tradingEngine.test.js",
+    "test:cloud": "node test/unit/cloudClient.test.js && node test/unit/orchestrator.test.js && node test/unit/cloudConfig.test.js",
+    "test:regression": "node test/regression/signalGenerator.test.js && node test/regression/bot.test.js && node test/regression/backwards-compat.test.js",
     "lint": "echo 'No linter configured'"
   },
   "keywords": [
@@ -44,8 +46,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.14.0",
     "axios": "^1.13.2",
     "decimal.js": "^10.6.0",
+    "node-cache": "^5.1.2",
     "ws": "^8.19.0"
   },
   "engines": {

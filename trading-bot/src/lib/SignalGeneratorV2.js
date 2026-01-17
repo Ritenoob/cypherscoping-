@@ -27,6 +27,9 @@ try {
 class SignalGeneratorV2 {
   constructor(config = {}) {
     this.config = config;
+    
+    // Cloud orchestrator for optional AI analysis (disabled by default)
+    this.cloudOrchestrator = config.cloudOrchestrator || null;
 
     // Use weights from signal-weights.js or defaults
     const weights = signalWeights?.indicators || {};
@@ -217,7 +220,8 @@ class SignalGeneratorV2 {
       indicators.emaTrend
     );
 
-    return {
+    // Build base result
+    const result = {
       score: totalScore,
       indicatorScore,
       microstructureScore,
@@ -233,6 +237,31 @@ class SignalGeneratorV2 {
       regime: regimeInfo,
       timestamp: Date.now()
     };
+
+    // NEW: Optional Claude AI analysis (disabled by default, non-blocking)
+    // If cloud orchestrator is available, trigger async analysis but don't wait
+    if (this.cloudOrchestrator) {
+      // Fire and forget - don't block signal generation
+      this.cloudOrchestrator.analyzeSignal({
+        symbol: this.config.symbol || 'UNKNOWN',
+        score: totalScore,
+        signals: allSignals,
+        microstructure: microstructure,
+        confidence
+      }).then(aiAnalysis => {
+        // Store AI analysis for later use if needed
+        if (aiAnalysis && aiAnalysis.success) {
+          // This could be logged or stored in a cache for dashboard display
+          // but doesn't affect the signal generation itself
+        }
+      }).catch(err => {
+        // Graceful degradation - log but don't fail
+        // Use console.log to match existing logging style in this file
+        console.log('[SignalGeneratorV2] Claude analysis failed (non-blocking):', err.message);
+      });
+    }
+
+    return result;
   }
 
   /**

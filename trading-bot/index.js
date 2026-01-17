@@ -27,6 +27,10 @@ const { getCredentials } = require('./config/apiCredentials');
 const { getClient } = require('./config/apiClient');
 const runtimeConfig = require('./config/runtimeConfig');
 
+// Cloud AI Integration (optional)
+const cloudConfig = require('./config/cloudConfig');
+const { CloudOrchestrator } = require('./src/cloud');
+
 class TradingBot {
   constructor(config = {}) {
     this.config = { ...screenerConfig, ...runtimeConfig, ...config };
@@ -37,6 +41,9 @@ class TradingBot {
     this.paperTrader = null;
     this.apiClient = null;
     this.credentials = null;
+    
+    // Cloud orchestrator (optional, disabled by default)
+    this.cloudOrchestrator = null;
     
     this.isRunning = false;
     this.mode = process.env.BOT_MODE || config.mode || 'paper';
@@ -95,6 +102,20 @@ class TradingBot {
       this.paperTrader = new PaperTradingEngine({
         initialBalance: this.config.initialBalance || 10000
       });
+    }
+    
+    // NEW: Initialize cloud services if enabled
+    if (cloudConfig.enabled) {
+      try {
+        console.log('[Bot] Initializing cloud AI services...');
+        this.cloudOrchestrator = new CloudOrchestrator(cloudConfig);
+        await this.cloudOrchestrator.initialize();
+        console.log('[Bot] Cloud AI services enabled');
+      } catch (err) {
+        console.error('[Bot] Failed to initialize cloud services:', err.message);
+        console.log('[Bot] Continuing without cloud features');
+        this.cloudOrchestrator = null;
+      }
     }
     
     console.log('[Bot] Initialization complete');
