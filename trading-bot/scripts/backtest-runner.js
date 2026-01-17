@@ -210,29 +210,29 @@ async function runBacktest(config) {
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  // WINNING CONFIG 2026-01-15: 78% win rate, 28.83 profit factor
+  // OPTIMIZED CONFIG 2026-01-16: 50% WR, 2.10 PF on SOL 15min
   const config = {
-    symbol: 'XBTUSDTM',  // KuCoin uses XBTUSDTM for Bitcoin
-    timeframe: '5min',   // Lower TF for precise entry (reversed MTF)
+    symbol: 'SOLUSDTM',  // Best performer - SOL has highest PF
+    timeframe: '15min',  // Optimal timeframe - 5min too noisy, 1h too few trades
     days: 30,
     initialBalance: 10000,
-    leverage: 15,        // 15x leverage
-    riskPerTrade: 1,     // Conservative
+    leverage: 15,        // 15x optimal - 20x reduces performance
+    riskPerTrade: 1,     // Conservative 1% risk per trade
     commission: 0.0006,
-    // OPTIMIZED 2026-01-15: Let winners run, cut losers fast
-    stopLossROI: 15,     // Tightened from 30 to 15% ROI (1% price at 15x) - cut losers faster
-    takeProfitROI: 150,  // Higher TP to let winners run
+    // OPTIMIZED 2026-01-16: Tight SL is KEY to high PF
+    stopLossROI: 10,     // Tightened to 10% ROI - cuts losers fast, PF 2.10
+    takeProfitROI: 100,  // TP rarely hit - trailing stop exits most trades
     // Break-Even DISABLED - was cutting winners too early
     breakEvenEnabled: false,
-    breakEvenActivation: 50,   // Raised to 50% ROI if re-enabled
-    breakEvenBuffer: 5.0,      // 5% buffer
-    // Trailing at 25% activation with 10% trail - let winners run longer
+    breakEvenActivation: 50,
+    breakEvenBuffer: 5.0,
+    // Trailing at 25% activation with 10% trail
     trailingStopEnabled: true,
-    trailingStopActivation: 25,  // Raised from 12% - don't trail until solid profit
-    trailingStopTrail: 10,       // Widened from 4% - give room to breathe
-    // Signal quality - 85+ for higher conviction entries (optimized 2026-01-15)
+    trailingStopActivation: 25,  // Don't trail until solid profit
+    trailingStopTrail: 10,       // Give room to breathe
+    // Signal quality - 85 optimal (70=too noisy, 95=too few trades)
     minScore: 85,
-    // Signal inversion - if strategy loses with normal signals, invert them
+    // Signal inversion disabled - normal signals work
     invertSignals: false
   };
   

@@ -5,34 +5,39 @@
 
 ---
 
-## Current Status: DATA COLLECTION COMPLETE - READY FOR OPTIMIZATION
+## Current Status: OPTIMIZATION IN PROGRESS - PF 2.10 ACHIEVED
 
-### Last Session Summary (2026-01-16)
-- Ran `npm test` - ALL 69 TESTS PASSED
-- Created data fetcher script: `scripts/fetch-ohlcv.js`
-- Fetched 30 days of OHLCV data for 4 coins
-- Total: **15,120 candles** stored locally
+### Session Summary (2026-01-16)
+- Switched to **KuCoin Futures live data** (per user request)
+- Ran backtests on 4 symbols: XBTUSDTM, ETHUSDTM, SOLUSDTM, XRPUSDTM
+- **SOLUSDTM 15min achieved Profit Factor 2.10** (target met!)
+- Updated `scripts/backtest-runner.js` with optimized config
 
-### Data Fetched
-| Symbol | Price Range | 15m | 1h | 4h |
-|--------|-------------|-----|----|----|
-| BTCUSDT | $84,408 - $97,932 | 2880 | 720 | 180 |
-| ETHUSDT | $2,772 - $3,403 | 2880 | 720 | 180 |
-| SOLUSDT | $116 - $148 | 2880 | 720 | 180 |
-| XRPUSDT | $1.77 - $2.41 | 2880 | 720 | 180 |
+### Optimal Configuration
+```
+Symbol: SOLUSDTM
+Timeframe: 15min
+Leverage: 15x
+SL: 10% ROI | TP: 100% ROI
+MinScore: 85
+Trailing: 25% activation, 10% trail
+```
 
-**Data Location:** `data/ohlcv/`
+### Results Summary
+| Symbol | WR | PF | Return |
+|--------|-----|-----|--------|
+| SOLUSDTM | 50% | **2.10** | +0.71% |
+| ETHUSDTM | 43% | 1.42 | +0.24% |
+| XBTUSDTM | 27% | 0.89 | -0.25% |
 
 ---
 
-## Next Steps (In Order)
-1. [x] Run npm test - PASSED
-2. [x] Create data fetcher script - DONE
-3. [x] Fetch OHLCV data - DONE (15,120 candles)
-4. [ ] Create backtest runner using local data
-5. [ ] Run optimization cycle
-6. [ ] Run walk-forward validation
-7. [ ] Compare results to baseline
+## Next Steps
+1. [x] Baseline backtest - DONE
+2. [x] SL/TP optimization - DONE (PF 2.10)
+3. [ ] Indicator parameter tuning
+4. [ ] Improve BTC/XRP performance
+5. [ ] Walk-forward validation (60+ days)
 
 ---
 
@@ -83,6 +88,9 @@ npm run walk-forward
 - Runtime: `config/runtimeConfig.js`
 - Profiles: `switches/signalProfiles/`
 - OHLCV Data: `data/ohlcv/`
+
+## Repository
+- **GitHub:** git@github.com:Ritenoob/cypherscoping-.git
 
 ---
 

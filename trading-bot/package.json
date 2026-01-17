@@ -13,6 +13,7 @@
     "dashboard": "node server.js",
     "setup": "node scripts/setup-api.js",
     "fetch-ohlcv": "node scripts/fetch-ohlcv.js",
+    "fetch-kucoin": "node scripts/fetch-kucoin-history.js",
     "backtest": "node scripts/backtest-runner.js",
     "export": "node scripts/export-signals.js",
     "optimize": "node scripts/optimize.js",

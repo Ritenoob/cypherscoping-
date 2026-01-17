@@ -1,0 +1,203 @@
+{
+  "fetchedAt": "2026-01-17T00:30:26.997Z",
+  "config": {
+    "symbols": [
+      "XBTUSDTM",
+      "ETHUSDTM",
+      "SOLUSDTM",
+      "XRPUSDTM",
+      "DOGEUSDTM",
+      "BNBUSDTM"
+    ],
+    "intervals": [
+      "15min",
+      "30min",
+      "1hour"
+    ],
+    "days": 30
+  },
+  "totalFiles": 18,
+  "totalCandles": 30240,
+  "results": [
+    {
+      "symbol": "XBTUSDTM",
+      "interval": "15min",
+      "candles": 2880,
+      "priceRange": {
+        "low": "84436.20",
+        "high": "97919.30"
+      },
+      "file": "XBTUSDTM_15min_30d.json"
+    },
+    {
+      "symbol": "XBTUSDTM",
+      "interval": "30min",
+      "candles": 1440,
+      "priceRange": {
+        "low": "84436.20",
+        "high": "97919.30"
+      },
+      "file": "XBTUSDTM_30min_30d.json"
+    },
+    {
+      "symbol": "XBTUSDTM",
+      "interval": "1hour",
+      "candles": 720,
+      "priceRange": {
+        "low": "84436.20",
+        "high": "97919.30"
+      },
+      "file": "XBTUSDTM_1hour_30d.json"
+    },
+    {
+      "symbol": "ETHUSDTM",
+      "interval": "15min",
+      "candles": 2880,
+      "priceRange": {
+        "low": "2774.43",
+        "high": "3404.14"
+      },
+      "file": "ETHUSDTM_15min_30d.json"
+    },
+    {
+      "symbol": "ETHUSDTM",
+      "interval": "30min",
+      "candles": 1440,
+      "priceRange": {
+        "low": "2774.43",
+        "high": "3404.14"
+      },
+      "file": "ETHUSDTM_30min_30d.json"
+    },
+    {
+      "symbol": "ETHUSDTM",
+      "interval": "1hour",
+      "candles": 720,
+      "priceRange": {
+        "low": "2774.43",
+        "high": "3404.14"
+      },
+      "file": "ETHUSDTM_1hour_30d.json"
+    },
+    {
+      "symbol": "SOLUSDTM",
+      "interval": "15min",
+      "candles": 2880,
+      "priceRange": {
+        "low": "116.83",
+        "high": "148.83"
+      },
+      "file": "SOLUSDTM_15min_30d.json"
+    },
+    {
+      "symbol": "SOLUSDTM",
+      "interval": "30min",
+      "candles": 1440,
+      "priceRange": {
+        "low": "116.83",
+        "high": "148.83"
+      },
+      "file": "SOLUSDTM_30min_30d.json"
+    },
+    {
+      "symbol": "SOLUSDTM",
+      "interval": "1hour",
+      "candles": 720,
+      "priceRange": {
+        "low": "116.83",
+        "high": "148.83"
+      },
+      "file": "SOLUSDTM_1hour_30d.json"
+    },
+    {
+      "symbol": "XRPUSDTM",
+      "interval": "15min",
+      "candles": 2880,
+      "priceRange": {
+        "low": "1.77",
+        "high": "2.42"
+      },
+      "file": "XRPUSDTM_15min_30d.json"
+    },
+    {
+      "symbol": "XRPUSDTM",
+      "interval": "30min",
+      "candles": 1440,
+      "priceRange": {
+        "low": "1.77",
+        "high": "2.42"
+      },
+      "file": "XRPUSDTM_30min_30d.json"
+    },
+    {
+      "symbol": "XRPUSDTM",
+      "interval": "1hour",
+      "candles": 720,
+      "priceRange": {
+        "low": "1.77",
+        "high": "2.42"
+      },
+      "file": "XRPUSDTM_1hour_30d.json"
+    },
+    {
+      "symbol": "DOGEUSDTM",
+      "interval": "15min",
+      "candles": 2880,
+      "priceRange": {
+        "low": "0.12",
+        "high": "0.16"
+      },
+      "file": "DOGEUSDTM_15min_30d.json"
+    },
+    {
+      "symbol": "DOGEUSDTM",
+      "interval": "30min",
+      "candles": 1440,
+      "priceRange": {
+        "low": "0.12",
+        "high": "0.16"
+      },
+      "file": "DOGEUSDTM_30min_30d.json"
+    },
+    {
+      "symbol": "DOGEUSDTM",
+      "interval": "1hour",
+      "candles": 720,
+      "priceRange": {
+        "low": "0.12",
+        "high": "0.16"
+      },
+      "file": "DOGEUSDTM_1hour_30d.json"
+    },
+    {
+      "symbol": "BNBUSDTM",
+      "interval": "15min",
+      "candles": 2880,
+      "priceRange": {
+        "low": "818.35",
+        "high": "954.59"
+      },
+      "file": "BNBUSDTM_15min_30d.json"
+    },
+    {
+      "symbol": "BNBUSDTM",
+      "interval": "30min",
+      "candles": 1440,
+      "priceRange": {
+        "low": "818.35",
+        "high": "954.59"
+      },
+      "file": "BNBUSDTM_30min_30d.json"
+    },
+    {
+      "symbol": "BNBUSDTM",
+      "interval": "1hour",
+      "candles": 720,
+      "priceRange": {
+        "low": "818.35",
+        "high": "954.59"
+      },
+      "file": "BNBUSDTM_1hour_30d.json"
+    }
+  ]
+}
