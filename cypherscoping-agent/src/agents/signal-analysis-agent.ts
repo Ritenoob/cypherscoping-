@@ -9,6 +9,8 @@ export interface SignalContext {
   atrPercent: number | null;
   isChoppy: boolean;
   conflictingSignals: number;
+  mtfAligned?: boolean;
+  higherTimeframeTrend?: 'up' | 'down' | 'neutral';
 }
 
 export class SignalAnalysisAgent extends BaseAgent {
@@ -16,6 +18,16 @@ export class SignalAnalysisAgent extends BaseAgent {
   private williamsR: WilliamsRIndicator;
   private mlEngine: MLEngine;
   private signalHistory: Map<string, number[]> = new Map();
+  private symbolCooldownUntil: Map<string, number> = new Map();
+  private readonly qualityConfig = {
+    minConfidence: Number(process.env.MIN_QUALITY_CONFIDENCE || 72),
+    maxAtrPercent: Number(process.env.MAX_SIGNAL_ATR_PERCENT || 8),
+    minVolume: Number(process.env.MIN_SIGNAL_VOLUME || 1000),
+    maxSpreadBps: Number(process.env.MAX_SPREAD_BPS || 25),
+    lossCooldownMs: Number(process.env.LOSS_COOLDOWN_MS || 30 * 60 * 1000)
+  };
+  private prevK: number = 50;
+  private prevD: number = 50;
 
   constructor() {
     super({
@@ -48,10 +60,11 @@ export class SignalAnalysisAgent extends BaseAgent {
 
     const indexedOHLCV = this.addIndexesToOHLCV(ohlcv);
     const signalContext = await this.buildSignalContext(context, indexedOHLCV);
-    const signal = await this.generateSignal(context, indexedOHLCV, signalContext);
+    let signal = await this.generateSignal(context, indexedOHLCV, signalContext);
     const aiAnalysis = await this.mlEngine.analyzeContext(context, signal, signalContext);
+    signal = this.applyQualityFilters(context, signal, aiAnalysis, signalContext);
 
-    this.recordSignalHistory(symbol, signal);
+    this.recordSignalHistory(context.symbol, signal);
 
     return {
       success: true,
@@ -62,20 +75,72 @@ export class SignalAnalysisAgent extends BaseAgent {
 
   private async buildSignalContext(context: AgentContext, indexedOHLCV: OHLCVWithIndex[]): Promise<SignalContext> {
     const { ohlcv } = context.marketData;
-    const latest = indexedOHLCV[indexedOHLCV.length - 1];
 
     const prevScore = this.getPreviousScore(context.symbol, context.symbol);
     const atrPercent = this.calculateATRPercent(ohlcv);
     const isChoppy = this.detectChoppyMarket(ohlcv);
     const conflictingSignals = this.countConflictingSignals(indexedOHLCV);
+    const higherTimeframeTrend = this.calculateHigherTimeframeTrend(ohlcv);
+    const lowerTimeframeTrend = this.calculateLowerTimeframeTrend(ohlcv);
+    const mtfAligned =
+      higherTimeframeTrend !== 'neutral' &&
+      lowerTimeframeTrend !== 'neutral' &&
+      higherTimeframeTrend === lowerTimeframeTrend;
 
     return {
       candleIndex: indexedOHLCV.length - 1,
       prevScore,
       atrPercent,
       isChoppy,
-      conflictingSignals
+      conflictingSignals,
+      mtfAligned,
+      higherTimeframeTrend
     };
+  }
+
+  private calculateLowerTimeframeTrend(ohlcv: OHLCV[]): 'up' | 'down' | 'neutral' {
+    if (ohlcv.length < 60) return 'neutral';
+    const closes = ohlcv.map((c) => c.close);
+    const fast = this.calculateEMA(closes, 12);
+    const slow = this.calculateEMA(closes, 26);
+    const f = fast[fast.length - 1];
+    const s = slow[slow.length - 1];
+    if (!Number.isFinite(f) || !Number.isFinite(s)) return 'neutral';
+    if (f > s) return 'up';
+    if (f < s) return 'down';
+    return 'neutral';
+  }
+
+  private aggregateCandles(ohlcv: OHLCV[], groupSize: number): OHLCV[] {
+    const out: OHLCV[] = [];
+    for (let i = 0; i < ohlcv.length; i += groupSize) {
+      const chunk = ohlcv.slice(i, i + groupSize);
+      if (chunk.length < groupSize) break;
+      out.push({
+        timestamp: chunk[chunk.length - 1].timestamp,
+        open: chunk[0].open,
+        high: Math.max(...chunk.map((c) => c.high)),
+        low: Math.min(...chunk.map((c) => c.low)),
+        close: chunk[chunk.length - 1].close,
+        volume: chunk.reduce((sum, c) => sum + c.volume, 0)
+      });
+    }
+    return out;
+  }
+
+  private calculateHigherTimeframeTrend(ohlcv: OHLCV[]): 'up' | 'down' | 'neutral' {
+    // Base data is 30m; aggregate 4 bars => 2h trend context.
+    const htf = this.aggregateCandles(ohlcv, 4);
+    if (htf.length < 30) return 'neutral';
+    const closes = htf.map((c) => c.close);
+    const fast = this.calculateEMA(closes, 9);
+    const slow = this.calculateEMA(closes, 21);
+    const f = fast[fast.length - 1];
+    const s = slow[slow.length - 1];
+    if (!Number.isFinite(f) || !Number.isFinite(s)) return 'neutral';
+    if (f > s) return 'up';
+    if (f < s) return 'down';
+    return 'neutral';
   }
 
   private async generateSignal(context: AgentContext, indexedOHLCV: OHLCVWithIndex[], signalContext: SignalContext): Promise<CompositeSignal> {
@@ -138,32 +203,32 @@ export class SignalAnalysisAgent extends BaseAgent {
   }
 
   private calculateStochRSI(closes: number[], rsiPeriod: number, stochPeriod: number, kPeriod: number, dPeriod: number): { value: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number } {
-    const rsi = this.calculateRSI(closes, rsiPeriod);
-    const rsiValues = [];
-
-    for (let i = 0; i < rsiPeriod - 1; i++) {
-      rsiValues.push(rsi.value);
+    const rsiSeries = this.calculateRSISeries(closes, rsiPeriod);
+    if (rsiSeries.length < stochPeriod + Math.max(kPeriod, dPeriod)) {
+      return { value: 50, signal: 'neutral', score: 0 };
     }
 
-    const latestRSI = rsi.value;
-
-    const lowestRSI = Math.min(...rsiValues);
-    const highestRSI = Math.max(...rsiValues);
-
-    const stochRSI = ((latestRSI - lowestRSI) / (highestRSI - lowestRSI || 1)) * 100;
-    const k = this.calculateStochasticK(stochRSI, kPeriod);
-
-    const dValues: number[] = [];
-    for (let i = 0; i < rsiPeriod - 1; i++) {
-      dValues.push(k[i]);
+    const stochRsiSeries: number[] = [];
+    for (let i = stochPeriod - 1; i < rsiSeries.length; i++) {
+      const window = rsiSeries.slice(i - stochPeriod + 1, i + 1);
+      const minRsi = Math.min(...window);
+      const maxRsi = Math.max(...window);
+      const denom = maxRsi - minRsi;
+      const normalized = denom === 0 ? 50 : ((rsiSeries[i] - minRsi) / denom) * 100;
+      stochRsiSeries.push(normalized);
     }
-    const d = this.calculateStochasticD(dValues.slice(-dPeriod), dPeriod);
+
+    const kSeries = this.smaSeries(stochRsiSeries, kPeriod);
+    const dSeries = this.smaSeries(kSeries, dPeriod);
+    const kValue = kSeries[kSeries.length - 1];
+    const d = dSeries[dSeries.length - 1];
+    const latestRSI = rsiSeries[rsiSeries.length - 1];
 
     let signal: 'bullish' | 'bearish' | 'neutral' = 'neutral';
     let score = 0;
 
-    const kOversold = k < 20 && d < 20;
-    const kOverbought = k > 80 && d > 80;
+    const kOversold = kValue < 20 && d < 20;
+    const kOverbought = kValue > 80 && d > 80;
 
     if (kOversold) {
       signal = 'bullish';
@@ -171,15 +236,15 @@ export class SignalAnalysisAgent extends BaseAgent {
     } else if (kOverbought) {
       signal = 'bearish';
       score = -20;
-    } else if (k > d && k > 50 && latestRSI > 50) {
+    } else if (kValue > d && kValue > 50 && latestRSI > 50) {
       signal = 'bullish';
       score = 18;
-    } else if (k < d && k < 50 && latestRSI < 50) {
+    } else if (kValue < d && kValue < 50 && latestRSI < 50) {
       signal = 'bearish';
       score = -18;
     }
 
-    return { value: k, signal, score };
+    return { value: kValue, signal, score };
   }
 
   private calculateStochasticK(stochRSI: number, kPeriod: number): number[] {
@@ -196,10 +261,30 @@ export class SignalAnalysisAgent extends BaseAgent {
     return sum / dPeriod;
   }
 
-  private calculateMACD(closes: number[], fastPeriod: number, slowPeriod: number, signalPeriod: number): { macd: number; signal: number; histogram: number; } {
+  private calculateRSISeries(closes: number[], period: number): number[] {
+    if (closes.length <= period) return [];
+    const series: number[] = [];
+    for (let i = period; i < closes.length; i++) {
+      const window = closes.slice(i - period, i + 1);
+      series.push(this.calculateRSI(window, period).value);
+    }
+    return series;
+  }
+
+  private smaSeries(values: number[], period: number): number[] {
+    if (values.length < period) return [];
+    const out: number[] = [];
+    for (let i = period - 1; i < values.length; i++) {
+      const window = values.slice(i - period + 1, i + 1);
+      out.push(window.reduce((a, b) => a + b, 0) / period);
+    }
+    return out;
+  }
+
+  private calculateMACD(closes: number[], fastPeriod: number, slowPeriod: number, signalPeriod: number): { value: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number; histogram: number } {
     const emaFast = this.calculateEMA(closes, fastPeriod);
     const emaSlow = this.calculateEMA(closes, slowPeriod);
-    const macdLine = emaFast - emaSlow;
+    const macdLine = emaFast[emaFast.length - 1] - emaSlow[emaSlow.length - 1];
 
     const macdValues: number[] = [];
     for (let i = 0; i < closes.length; i++) {
@@ -209,16 +294,17 @@ export class SignalAnalysisAgent extends BaseAgent {
     const signalValues = macdValues.slice(-signalPeriod);
     const signal = this.calculateEMA(signalValues, signalPeriod);
 
-    const histogram = macdLine - signal;
+    const histogram = macdLine - signal[signal.length - 1];
 
     return {
-      macd: macdLine,
-      signal: histogram > 0 ? 18 : histogram < 0 ? -18 : 0,
+      value: macdLine,
+      signal: histogram > 0 ? 'bullish' : histogram < 0 ? 'bearish' : 'neutral',
+      score: histogram > 0 ? 18 : histogram < 0 ? -18 : 0,
       histogram
     };
   }
 
-  private calculateBollingerBands(closes: number[], period: number, multiplier: number): { upper: number; middle: number; lower: number; percentB: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number } {
+  private calculateBollingerBands(closes: number[], period: number, multiplier: number): { value: number; upper: number; middle: number; lower: number; percentB: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number } {
     const sma = this.calculateSMA(closes, period);
     const slice = closes.slice(-period);
     const variance = slice.reduce((acc, val) => acc + Math.pow(val - sma, 2), 0) / period;
@@ -241,10 +327,10 @@ export class SignalAnalysisAgent extends BaseAgent {
       score = -20;
     }
 
-    return { upper, middle: sma, lower, percentB, signal, score };
+    return { value: percentB, upper, middle: sma, lower, percentB, signal, score };
   }
 
-  private calculateStochastic(highs: number[], lows: number[], closes: number[], kPeriod: number, dPeriod: number): { k: number; d: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number } {
+  private calculateStochastic(highs: number[], lows: number[], closes: number[], kPeriod: number, dPeriod: number): { value: number; k: number; d: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number } {
     const period = kPeriod + dPeriod + 2;
     const sliceHighs = highs.slice(-period);
     const sliceLows = lows.slice(-period);
@@ -276,16 +362,10 @@ export class SignalAnalysisAgent extends BaseAgent {
       score = -18;
     }
 
-    return { k, d, signal, score };
+    return { value: k, k, d, signal, score };
   }
 
-  private calculateStochasticD(kValues: number[], dPeriod: number): number {
-    const values = kValues.slice(-dPeriod);
-    const sum = values.reduce((a, b) => a + b, 0);
-    return sum / dPeriod;
-  }
-
-  private calculateKDJ(highs: number[], lows: number[], closes: number[], period: number, kSmooth: number, dSmooth: number): { k: number; d: number; j: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number } {
+  private calculateKDJ(highs: number[], lows: number[], closes: number[], period: number, kSmooth: number, dSmooth: number): { value: number; k: number; d: number; j: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number } {
     const sliceHighs = highs.slice(-period);
     const sliceLows = lows.slice(-period);
     const sliceCloses = closes.slice(-period);
@@ -296,9 +376,14 @@ export class SignalAnalysisAgent extends BaseAgent {
 
     const rsv = highestHigh === lowestLow ? 50 : ((latestClose - lowestLow) / (highestHigh - lowestLow)) * 100;
 
+    let prevK = this.prevK || 50;
+    let prevD = this.prevD || 50;
     let k = (2 / 3) * prevK + (1 / 3) * rsv;
     let d = (2 / 3) * prevD + (1 / 3) * k;
     let j = 3 * k - 2 * d;
+
+    this.prevK = k;
+    this.prevD = d;
 
     let signal: 'bullish' | 'bearish' | 'neutral' = 'neutral';
     let score = 0;
@@ -311,39 +396,47 @@ export class SignalAnalysisAgent extends BaseAgent {
       score = -17;
     }
 
-    return { k, d, j, signal, score };
+    return { value: j, k, d, j, signal, score };
   }
 
-  private calculateEMATrend(closes: number[], shortPeriod: number, mediumPeriod: number, longPeriod: number): { shortEMA: number; mediumEMA: number; longEMA: number; trend: 'up' | 'down' | 'neutral'; score: number } {
+  private calculateEMATrend(closes: number[], shortPeriod: number, mediumPeriod: number, longPeriod: number): { value: number; shortEMA: number; mediumEMA: number; longEMA: number; signal: 'bullish' | 'bearish' | 'neutral'; trend: 'up' | 'down' | 'neutral'; score: number } {
     const shortEMA = this.calculateEMA(closes, shortPeriod);
     const mediumEMA = this.calculateEMA(closes, mediumPeriod);
     const longEMA = this.calculateEMA(closes, longPeriod);
 
     let trend: 'up' | 'down' | 'neutral' = 'neutral';
+    let signal: 'bullish' | 'bearish' | 'neutral' = 'neutral';
     let score = 0;
 
-    if (shortEMA > mediumEMA && mediumEMA > longEMA) {
+    if (shortEMA[shortEMA.length - 1] > mediumEMA[mediumEMA.length - 1] && mediumEMA[mediumEMA.length - 1] > longEMA[longEMA.length - 1]) {
       trend = 'up';
+      signal = 'bullish';
       score = 25;
-    } else if (shortEMA < mediumEMA && mediumEMA < longEMA) {
+    } else if (shortEMA[shortEMA.length - 1] < mediumEMA[mediumEMA.length - 1] && mediumEMA[mediumEMA.length - 1] < longEMA[longEMA.length - 1]) {
       trend = 'down';
+      signal = 'bearish';
       score = -25;
+    } else {
+      signal = 'neutral';
     }
 
-    return { shortEMA, mediumEMA, longEMA, trend, score };
+    return { value: shortEMA[shortEMA.length - 1] - longEMA[longEMA.length - 1], shortEMA: shortEMA[shortEMA.length - 1], mediumEMA: mediumEMA[mediumEMA.length - 1], longEMA: longEMA[longEMA.length - 1], signal, trend, score };
   }
 
-  private calculateAO(highs: number[], lows: number[], fastPeriod: number, slowPeriod: number): { ao: number; histogram: number; } {
+  private calculateAO(highs: number[], lows: number[], fastPeriod: number, slowPeriod: number): { value: number; ao: number; histogram: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number } {
     const medianPrices = highs.map((h, i) => (h + lows[i]) / 2);
     const smaFast = this.calculateSMA(medianPrices, fastPeriod);
     const smaSlow = this.calculateSMA(medianPrices, slowPeriod);
 
     const ao = smaFast - smaSlow;
-    const prevAO = this.getSMA(medianPrices.slice(0, -2), slowPeriod);
+    const prevAO = this.calculateSMA(medianPrices.slice(0, -2), slowPeriod);
 
     const histogram = ao > 0 && ao > prevAO ? 17 : ao < 0 && ao < prevAO ? 17 : 0;
+    
+    const signal = ao > 0 ? 'bullish' : ao < 0 ? 'bearish' : 'neutral';
+    const score = ao > 0 ? 17 : ao < 0 ? -17 : 0;
 
-    return { ao, histogram };
+    return { value: ao, ao, histogram, signal, score };
   }
 
   private calculateEMA(data: number[], period: number): number[] {
@@ -367,7 +460,7 @@ export class SignalAnalysisAgent extends BaseAgent {
     return data.slice(-period).reduce((a, b) => a + b, 0) / period;
   }
 
-  private calculateOBV(closes: number[], volumes: number[]): { obv: number; trend: 'bullish' | 'bearish' | 'neutral'; score: number } {
+  private calculateOBV(closes: number[], volumes: number[]): { value: number; signal: string; score: number } {
     let obv = 0;
 
     for (let i = 1; i < closes.length; i++) {
@@ -380,7 +473,7 @@ export class SignalAnalysisAgent extends BaseAgent {
 
     const smaOBV = obv / 20;
 
-    let signal: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+    let signal: string = 'neutral';
     let score = 0;
 
     const obvTrend = obv > smaOBV ? 1 : -1;
@@ -393,10 +486,10 @@ export class SignalAnalysisAgent extends BaseAgent {
       score = -18;
     }
 
-    return { obv, signal, score };
+    return { value: obv, signal, score };
   }
 
-  private calculateCMF(highs: number[], lows: number[], closes: number[], volumes: number[], period: number): { cmf: number; signal: 'bullish' | 'bearish' | 'neutral'; score: number } {
+  private calculateCMF(highs: number[], lows: number[], closes: number[], volumes: number[], period: number): { value: number; signal: string; score: number } {
     let mfmSum = 0;
     let volSum = 0;
 
@@ -415,7 +508,7 @@ export class SignalAnalysisAgent extends BaseAgent {
 
     const cmf = mfmSum / volSum;
 
-    let signal: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+    let signal: string = 'neutral';
     let score = 0;
 
     if (cmf > 0.1) {
@@ -426,13 +519,13 @@ export class SignalAnalysisAgent extends BaseAgent {
       score = -19;
     }
 
-    return { cmf, signal, score };
+    return { value: cmf, signal, score };
   }
 
-  private calculateKlinger(highs: number[], lows: number[], closes: number[], volumes: number[], fastPeriod: number, slowPeriod: number, signalPeriod: number): { kvo: number; signal: number; } {
+  private calculateKlinger(highs: number[], lows: number[], closes: number[], volumes: number[], fastPeriod: number, slowPeriod: number, signalPeriod: number): { value: number; signal: string; score: number } {
     let vfHistory: number[] = [];
-    let fastEMA: number[] = [];
-    let slowEMA: number[] = [];
+    let fastEMA: number[][] = [];
+    let slowEMA: number[][] = [];
 
     for (let i = 0; i < closes.length; i++) {
       const high = highs[i];
@@ -458,14 +551,14 @@ export class SignalAnalysisAgent extends BaseAgent {
       slowEMA.push(this.calculateEMA(vfHistory.slice(-slowPeriod), slowPeriod));
     }
 
-    const fastValue = fastEMA[fastEMA.length - 1];
-    const slowValue = slowEMA[slowEMA.length - 1];
+    const fastValue = fastEMA[fastEMA.length - 1][fastEMA[fastEMA.length - 1].length - 1];
+    const slowValue = slowEMA[slowEMA.length - 1][slowEMA[slowEMA.length - 1].length - 1];
     const signal = fastValue - slowValue;
 
-    return { kvo: signal, signal };
+    return { value: signal, signal: signal > 0 ? 'bullish' : signal < 0 ? 'bearish' : 'neutral', score: Math.abs(signal) * 10 };
   }
 
-  private calculateADX(highs: number[], lows: number[], closes: number[], period: number): { adx: number; plusDI: number; minusDI: number; trend: 'trending' | 'ranging' | 'neutral' } {
+  private calculateADX(highs: number[], lows: number[], closes: number[], period: number): { value: number; signal: string; score: number; trend: 'trending' | 'ranging' | 'neutral' } {
     const trValues = [];
 
     for (let i = 1; i < closes.length; i++) {
@@ -493,18 +586,22 @@ export class SignalAnalysisAgent extends BaseAgent {
     const minusDI = smoothMinus[smoothMinus.length - 1];
 
     let trend: 'ranging' | 'trending' | 'neutral' = 'ranging';
+    let signal: string = 'neutral';
+    let score = 0;
 
     if (adx > 25) {
       trend = 'trending';
+      signal = plusDI > minusDI ? 'bullish' : 'bearish';
+      score = plusDI > minusDI ? 20 : -20;
     } else if (adx < 20) {
       trend = 'ranging';
     }
 
-    return { adx, plusDI, minusDI, trend };
+    return { value: adx, signal, score, trend };
   }
 
 
-  private calculateATR(highs: number[], lows: number[], closes: number[], period: number): { atr: number; atrPercent: number } {
+  private calculateATR(highs: number[], lows: number[], closes: number[], period: number): { value: number; signal: string; score: number; atrPercent: number } {
     let trValues = [];
 
     for (let i = 1; i < closes.length; i++) {
@@ -520,7 +617,7 @@ export class SignalAnalysisAgent extends BaseAgent {
     const latestClose = closes[closes.length - 1];
     const atrPercent = atr / latestClose * 100;
 
-    return { atr, atrPercent };
+    return { value: atr, signal: 'neutral', score: 0, atrPercent };
   }
 
   private calculateATRPercent(ohlcv: OHLCV[]): number {
@@ -539,8 +636,10 @@ export class SignalAnalysisAgent extends BaseAgent {
     const totalChange = Math.abs(lastClose - firstClose);
     const averageVolatility = totalChange / firstClose;
 
-    const sumSquares = closes.reduce((acc, close) => acc + Math.pow(close - firstClose, 2), 0);
-    const stdDev = Math.sqrt(sumSquares / closes.length - 1);
+    const mean = closes.reduce((acc, close) => acc + close, 0) / closes.length;
+    const sumSquares = closes.reduce((acc, close) => acc + Math.pow(close - mean, 2), 0);
+    const variance = sumSquares / Math.max(1, closes.length - 1);
+    const stdDev = Math.sqrt(variance);
 
     return stdDev < averageVolatility * 0.3;
   }
@@ -553,12 +652,12 @@ export class SignalAnalysisAgent extends BaseAgent {
     const macd = this.calculateMACD(ohlcv.map(c => c.close), 12, 26, 9);
 
     if (rsi.signal === 'bullish') rsiSignals++;
-    else if (rsi.signal === 'bearish') rsiSignals++;
+    else if (rsi.signal === 'bearish') rsiSignals--;
 
-    if (macd.signal > 0) macdSignals++;
-    else if (macd.signal < 0) macdSignals++;
+    if (macd.signal === 'bullish') macdSignals++;
+    else if (macd.signal === 'bearish') macdSignals--;
 
-    return Math.abs(rsiSignals - macdSignals) + Math.abs(rsiSignals - macdSignals);
+    return Math.abs(rsiSignals - macdSignals);
   }
 
   private getPreviousScore(symbol: string, coin: string): number {
@@ -583,6 +682,69 @@ export class SignalAnalysisAgent extends BaseAgent {
       ...candle,
       index
     }));
+  }
+
+  private applyQualityFilters(
+    context: AgentContext,
+    signal: CompositeSignal,
+    aiAnalysis: AIAnalysis,
+    signalContext: SignalContext
+  ): CompositeSignal {
+    const reasons = new Set(signal.blockReasons || []);
+    const latestCandle = context.marketData.ohlcv[context.marketData.ohlcv.length - 1];
+    const now = Date.now();
+
+    if (signal.confidence < this.qualityConfig.minConfidence) {
+      reasons.add('low_quality_confidence');
+    }
+
+    if (signalContext.atrPercent !== null && signalContext.atrPercent > this.qualityConfig.maxAtrPercent) {
+      reasons.add('volatility_too_high');
+    }
+
+    if (latestCandle && latestCandle.volume < this.qualityConfig.minVolume) {
+      reasons.add('low_liquidity');
+    }
+
+    const spreadBps = this.estimateSpreadBps(context);
+    if (spreadBps !== null && spreadBps > this.qualityConfig.maxSpreadBps) {
+      reasons.add('spread_too_wide');
+    }
+
+    if (aiAnalysis.marketRegime === 'ranging' && Math.abs(signal.compositeScore) < 95) {
+      reasons.add('regime_mismatch');
+    }
+
+    const hasRecentLoss = context.positions.some((p) => p.symbol === context.symbol && p.pnlPercent <= -3);
+    if (hasRecentLoss) {
+      this.symbolCooldownUntil.set(context.symbol, now + this.qualityConfig.lossCooldownMs);
+    }
+
+    const cooldownUntil = this.symbolCooldownUntil.get(context.symbol) || 0;
+    if (cooldownUntil > now) {
+      reasons.add('cooldown_after_losses');
+    }
+
+    if (reasons.size === 0) {
+      return signal;
+    }
+
+    return {
+      ...signal,
+      authorized: false,
+      side: null,
+      blockReasons: Array.from(reasons)
+    };
+  }
+
+  private estimateSpreadBps(context: AgentContext): number | null {
+    const orderBook = context.marketData.orderBook;
+    if (!orderBook || !Array.isArray(orderBook.bids) || !Array.isArray(orderBook.asks)) return null;
+    const bestBid = orderBook.bids[0]?.[0];
+    const bestAsk = orderBook.asks[0]?.[0];
+    if (!bestBid || !bestAsk || bestBid <= 0 || bestAsk <= 0 || bestAsk <= bestBid) return null;
+    const mid = (bestBid + bestAsk) / 2;
+    return ((bestAsk - bestBid) / mid) * 10000;
   }
 
   async shutdown(): Promise<void> {
@@ -624,8 +786,8 @@ class MLEngine {
     reasoning.push(`Risk level: ${riskLevel}`);
 
     const suggestedAction = {
-      type: signal.authorized ? 'entry' : 'wait',
-      side: signal.side,
+      type: signal.authorized ? 'entry' as const : 'wait' as const,
+      side: signal.side || undefined,
       size: signal.confidence > 80 ? 2 : signal.confidence > 60 ? 1.5 : 1,
       leverage: signal.confidence > 85 ? 30 : signal.confidence > 70 ? 20 : 15,
       roiTarget: signal.confidence > 80 ? 30 : signal.confidence > 70 ? 15 : 10
@@ -668,16 +830,12 @@ class MLEngine {
     if (signalContext.conflictingSignals > 3) return 'high';
     if (signalContext.isChoppy) return 'high';
 
-    if (signalContext.atrPercent > 6) return 'high';
-    if (signalContext.atrPercent > 4) return 'medium';
+    if (signalContext.atrPercent !== null && signalContext.atrPercent > 6) return 'high';
+    if (signalContext.atrPercent !== null && signalContext.atrPercent > 4) return 'medium';
 
     if (openPositions >= 5) return 'high';
     if (openPositions >= 3) return 'medium';
 
     return 'low';
   }
-}
-
-interface OHLCVWithIndex extends OHLCV {
-  index: number;
 }

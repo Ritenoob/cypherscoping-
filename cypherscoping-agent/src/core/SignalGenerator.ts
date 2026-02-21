@@ -4,13 +4,13 @@ import { EntryGates, GateContext, GateResult } from './EntryGates';
 import { ConfidenceCalculator, ConfidenceContext } from './ConfidenceCalculator';
 
 export interface IndicatorResults {
-  williamsR: WilliamsRResult;
+  williamsR?: WilliamsRResult;
   [key: string]: {
     value: number | null;
     signal: string;
     score: number;
     signals?: SignalResult[];
-  };
+  } | WilliamsRResult | undefined;
 }
 
 export interface CompositeSignal {
@@ -103,7 +103,7 @@ export class SignalGenerator {
     this.confidenceCalculator = new ConfidenceCalculator(this.config.confidenceCalculator);
   }
 
-  generate(indicatorResults: IndicatorResults, microstructure = {}, context = {}): CompositeSignal {
+  generate(indicatorResults: IndicatorResults, microstructure: any, context: any): CompositeSignal {
     const results = indicatorResults;
 
     let indicatorScore = 0;
@@ -155,10 +155,11 @@ export class SignalGenerator {
 
     for (const [name, data] of Object.entries(results)) {
       if (name === 'williamsR' || !data) continue;
-      if (!data.enabled) continue;
+      const config = V6_OPTIMIZED_WEIGHTS[name.toUpperCase()];
+      if (!config?.enabled) continue;
 
       const weight = V6_OPTIMIZED_WEIGHTS[name.toUpperCase()]?.weight || 20;
-      const contribution = (data.score || 0);
+      const contribution = ((data as any).score || 0);
       const contributionValue = Math.sign(contribution) * weight;
 
       if (data.value !== null && data.value !== 0) {
@@ -169,14 +170,14 @@ export class SignalGenerator {
       if (contributionValue > 0) indicatorsAgreeing.bullish++;
       else if (contributionValue < 0) indicatorsAgreeing.bearish++;
 
-      allSignals.push({
-        type: data.signal || 'generic',
-        direction: contributionValue > 0 ? 'bullish' : contributionValue < 0 ? 'bearish' : 'neutral',
-        strength: 'moderate',
-        message: `${name}: ${data.signal || 'value=' + data.value}`,
-        metadata: { name, value: data.value },
-        source: name
-      });
+         allSignals.push({
+          type: (data as any).signal || 'generic',
+          direction: contributionValue > 0 ? 'bullish' as const : contributionValue < 0 ? 'bearish' as const : 'bullish' as const, // Default to bullish for neutral
+          strength: 'moderate',
+          message: `${name}: ${(data as any).signal || 'value=' + data.value}`,
+          metadata: { name, value: data.value },
+          source: name
+        });
     }
 
     if (microstructure.buySellRatio) {
@@ -219,8 +220,8 @@ export class SignalGenerator {
       confidence,
       indicatorsAgreeing: indicatorsAgreeing.bullish + indicatorsAgreeing.bearish,
       totalIndicators: activeIndicators,
-      agreeingIndicators: allSignals.filter(s => s.direction !== 'neutral').map(s => s.source),
-      trendAligned: this.checkTrendAlignment(results, totalScore),
+      agreeingIndicators: allSignals.filter(s => s.source).map(s => s.source!),
+      trendAligned: this.checkTrendAlignment(results, totalScore, context),
       drawdownPct: context.drawdownPct || 0,
       atrPercent: context.atrPercent || null,
       conflictingSignals: this.countConflictingSignals(allSignals)
@@ -229,7 +230,7 @@ export class SignalGenerator {
     const gateResult = this.entryGates.evaluate(gateContext);
 
     let triggerCandle: number | null = null;
-    let windowExpires: number | null;
+    let windowExpires: number | null = null;
     let side: 'long' | 'short' | null = null;
 
     if (williamsR) {
@@ -248,18 +249,30 @@ export class SignalGenerator {
       }
     }
 
+    if (!side) {
+      if (totalScore > 0) side = 'long';
+      else if (totalScore < 0) side = 'short';
+    }
+
+    const scoreQualified = Math.abs(totalScore) >= 75;
+    const isAuthorized = gateResult.pass && scoreQualified && side !== null;
+    if (isAuthorized && triggerCandle === null) {
+      triggerCandle = context.candleIndex || 0;
+      windowExpires = Date.now() + 3600000;
+    }
+
     const signalStrength = this.getSignalStrength(classification, allSignals, divergenceCount);
 
     return {
       compositeScore: totalScore,
-      authorized: gateResult.pass && totalScore >= 75,
+      authorized: isAuthorized,
       side,
       confidence,
       triggerCandle,
       windowExpires,
-      indicatorScores: new Map(
-        Object.entries(results).map(([name, data]) => [name, data.score || 0])
-      ),
+       indicatorScores: new Map(
+         Object.entries(results).map(([name, data]) => [name, (data as any).score || 0])
+       ),
       microstructureScore,
       blockReasons: gateResult.reasons,
       confirmations: allSignals.length,
@@ -274,12 +287,12 @@ export class SignalGenerator {
     indicatorScore: number,
     microstructureScore: number,
     signalCount: number,
-    indicatorsAgreeing: { bullish: number; bearish: number }
+    indicatorsAgreeing: { bullish: number; bearish: number; neutral?: number }
   ): number {
     let confidence = 50;
 
     const totalAgreement = Math.max(indicatorsAgreeing.bullish, indicatorsAgreeing.bearish);
-    const agreementRatio = totalAgreement / (indicatorsAgreeing.bullish + indicatorsAgreeing.bearish + indicatorsAgreeing.neutral + 1);
+    const agreementRatio = totalAgreement / (indicatorsAgreeing.bullish + indicatorsAgreeing.bearish + (indicatorsAgreeing.neutral || 0) + 1);
 
     confidence += agreementRatio * 30;
 
@@ -325,10 +338,14 @@ export class SignalGenerator {
     return 'trend';
   }
 
-  private checkTrendAlignment(results: IndicatorResults, score: number): boolean {
-    if (results.emaTrend && results.emaTrend.trend) {
-      return (score > 0 && results.emaTrend.trend === 'bullish') ||
-             (score < 0 && results.emaTrend.trend === 'bearish');
+  private checkTrendAlignment(results: IndicatorResults, score: number, context: any): boolean {
+    const mtfAligned = context && typeof context.mtfAligned === 'boolean' ? context.mtfAligned : true;
+    if (results.emaTrend && (results.emaTrend as any).trend) {
+      const trend = (results.emaTrend as any).trend;
+      const localAligned =
+        (score > 0 && (trend === 'bullish' || trend === 'up')) ||
+        (score < 0 && (trend === 'bearish' || trend === 'down'));
+      return localAligned && mtfAligned;
     }
     return false;
   }

@@ -15,6 +15,9 @@ export abstract class BaseAgent extends EventEmitter {
   public readonly id: string;
   public readonly name: string;
   public readonly role: string;
+  public readonly capabilities: string[];
+  public readonly maxConcurrentTasks: number;
+  public readonly priority: number;
   protected isRunning: boolean = false;
   protected taskQueue: Map<string, any> = new Map();
   protected memory: AgentMemory = new AgentMemory();
@@ -24,6 +27,9 @@ export abstract class BaseAgent extends EventEmitter {
     this.id = config.id || uuidv4();
     this.name = config.name;
     this.role = config.role;
+    this.capabilities = config.capabilities;
+    this.maxConcurrentTasks = config.maxConcurrentTasks;
+    this.priority = config.priority;
   }
 
   abstract initialize(): Promise<void>;
@@ -54,6 +60,14 @@ export abstract class BaseAgent extends EventEmitter {
     } finally {
       this.isRunning = false;
     }
+  }
+
+  canHandleTask(task: any): boolean {
+    const requiredCapabilities = task?.requiredCapabilities;
+    if (!Array.isArray(requiredCapabilities) || requiredCapabilities.length === 0) {
+      return true;
+    }
+    return requiredCapabilities.every((cap: string) => this.capabilities.includes(cap));
   }
 
   getState(): { id: string; name: string; role: string; isRunning: boolean; taskCount: number } {
@@ -211,6 +225,7 @@ export class AgentOrchestrator {
 
     this.metrics.totalTasks++;
     const startTime = Date.now();
+    this.incrementAgentLoad(agent.id);
     
     try {
       const result = await agent.processTask(task);
@@ -222,6 +237,8 @@ export class AgentOrchestrator {
     } catch (error) {
       this.metrics.failedTasks++;
       throw error;
+    } finally {
+      this.decrementAgentLoad(agent.id);
     }
   }
 
@@ -230,20 +247,30 @@ export class AgentOrchestrator {
     let bestScore = -Infinity;
 
     for (const agent of this.agents.values()) {
+      if (!agent.canHandleTask(task)) {
+        continue;
+      }
       const load = this.metrics.agentLoad.get(agent.id) || 0;
-      const score = 100 - load;
+      const priorityScore = agent.priority * 10;
+      const capacityScore = Math.max(0, agent.maxConcurrentTasks - load) * 5;
+      const score = priorityScore + capacityScore - load;
       if (score > bestScore) {
         bestScore = score;
         bestAgent = agent;
       }
     }
 
-    if (bestAgent) {
-      const currentLoad = this.metrics.agentLoad.get(bestAgent.id) || 0;
-      this.metrics.agentLoad.set(bestAgent.id, currentLoad + 1);
-    }
-
     return bestAgent;
+  }
+
+  private incrementAgentLoad(agentId: string): void {
+    const currentLoad = this.metrics.agentLoad.get(agentId) || 0;
+    this.metrics.agentLoad.set(agentId, currentLoad + 1);
+  }
+
+  private decrementAgentLoad(agentId: string): void {
+    const currentLoad = this.metrics.agentLoad.get(agentId) || 0;
+    this.metrics.agentLoad.set(agentId, Math.max(0, currentLoad - 1));
   }
 
   getStats(): any {

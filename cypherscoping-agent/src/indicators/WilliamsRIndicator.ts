@@ -435,6 +435,63 @@ export class WilliamsRIndicator extends EventEmitter {
     return highs;
   }
 
+  private getHook(): SignalResult | null {
+    const recent = this.wrHistory.slice(-4);
+    if (recent.length < 4) return null;
+
+    if (recent[0] > recent[1] && recent[1] > recent[2] && recent[3] > recent[2] && recent[2] < this.oversoldLevel) {
+      return {
+        type: 'bullish_hook',
+        direction: 'bullish',
+        strength: 'moderate',
+        message: 'Williams %R bullish hook in oversold zone',
+        metadata: { values: recent, hookPoint: recent[2] }
+      };
+    }
+
+    if (recent[0] < recent[1] && recent[1] < recent[2] && recent[3] < recent[2] && recent[2] > this.overboughtLevel) {
+      return {
+        type: 'bearish_hook',
+        direction: 'bearish',
+        strength: 'moderate',
+        message: 'Williams %R bearish hook in overbought zone',
+        metadata: { values: recent, hookPoint: recent[2] }
+      };
+    }
+
+    return null;
+  }
+
+  private getSignals(): SignalResult[] {
+    const signals: SignalResult[] = [];
+    
+    const crossover = this.getCrossover();
+    if (crossover) signals.push(crossover);
+    
+    const failureSwing = this.getFailureSwing();
+    if (failureSwing) signals.push(failureSwing);
+    
+    const divergence = this.getDivergence();
+    if (divergence) signals.push(divergence);
+    
+    const hiddenDivergence = this.getHiddenDivergence();
+    if (hiddenDivergence) signals.push(hiddenDivergence);
+    
+    const zone = this.getZone();
+    if (zone) signals.push(zone);
+    
+    const momentumThrust = this.getMomentumThrust();
+    if (momentumThrust) signals.push(momentumThrust);
+    
+    const hook = this.getHook();
+    if (hook) signals.push(hook);
+    
+    const fastSlowCross = this.getFastSlowCrossover();
+    if (fastSlowCross) signals.push(fastSlowCross);
+    
+    return signals;
+  }
+
   reset(): void {
     this.highs = [];
     this.lows = [];

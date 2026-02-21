@@ -46,6 +46,19 @@ npm run build
 
 ## Usage
 
+### CLI (4 Agents, Optimized)
+
+```bash
+cd cypherscoping-agent
+npm run build
+
+# Run optimized analysis pipeline with all tools allowed
+node dist/cli.js --analyze --symbol XBTUSDTM --all-tools-allowed --json
+
+# Market scan using the 4-agent orchestration
+node dist/cli.js --scan --all-tools-allowed
+```
+
 ### Basic Usage
 
 ```typescript
@@ -58,7 +71,7 @@ async function main() {
   agent.setMode('algo');
   
   // Analyze a symbol
-  const result = await agent.analyze('BTC/USDT', ohlcvData);
+  const result = await agent.analyze('XBTUSDTM', ohlcvData);
   console.log('Signal:', result.signal);
   console.log('AI Analysis:', result.aiAnalysis);
   
@@ -67,7 +80,7 @@ async function main() {
   console.log('Opportunities:', scan.topOpportunities);
   
   // Execute trade
-  await agent.trade('BTC/USDT', 'buy', 1.5);
+  await agent.trade('XBTUSDTM', 'buy', 1.5);
   
   await agent.shutdown();
 }
@@ -129,7 +142,7 @@ Create a `config.json` file:
     "maxDrawdown": 0.03,
     "maxOpenPositions": 5
   },
-  "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+  "symbols": ["XBTUSDTM", "ETHUSDTM", "SOLUSDTM"]
 }
 ```
 

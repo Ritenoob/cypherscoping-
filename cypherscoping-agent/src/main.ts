@@ -1,12 +1,18 @@
 import { CypherScopeOrchestrator } from './agents/orchestrator';
 import { OHLCV } from './types';
 
+export interface CypherScopeAgentOptions {
+  allToolsAllowed?: boolean;
+  optimizeExecution?: boolean;
+  enabledTools?: string[];
+}
+
 class CypherScopeAgent {
   private orchestrator: CypherScopeOrchestrator;
   private isInitialized: boolean = false;
 
-  constructor() {
-    this.orchestrator = new CypherScopeOrchestrator();
+  constructor(options: CypherScopeAgentOptions = {}) {
+    this.orchestrator = new CypherScopeOrchestrator(options);
   }
 
   async initialize(): Promise<void> {
@@ -55,8 +61,8 @@ class CypherScopeAgent {
 
 export default CypherScopeAgent;
 
-export async function createAgent(): Promise<CypherScopeAgent> {
-  const agent = new CypherScopeAgent();
+export async function createAgent(options: CypherScopeAgentOptions = {}): Promise<CypherScopeAgent> {
+  const agent = new CypherScopeAgent(options);
   await agent.initialize();
   return agent;
 }

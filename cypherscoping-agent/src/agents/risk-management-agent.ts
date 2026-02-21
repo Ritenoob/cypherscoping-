@@ -1,5 +1,5 @@
-import { BaseAgent, AgentMemory } from './base-agent';
-import { AgentContext, AgentResult, Position, RiskParameters, AIAnalysis, CompositeSignal } from '../types';
+import { BaseAgent } from './base-agent';
+import { AgentContext, AgentResult, Position, CompositeSignal } from '../types';
 import { getRecommendedLeverage } from '../config/indicator-weights';
 
 export interface RiskConfig {
@@ -128,42 +128,30 @@ export class RiskManagementAgent extends BaseAgent {
   private async analyzeRisk(context: AgentContext): Promise<RiskAnalysis> {
     const positions = context.positions;
     const balance = context.balance;
-    const signal = context.marketData.signal as CompositeSignal;
-
-    const openPositions = positions.filter(p => p.stopLoss === null || p.takeProfit === null);
+    const signal = context.marketData.signal as CompositeSignal | null;
     const totalExposure = positions.reduce((sum, p) => sum + (p.size * p.entryPrice), 0);
+    const latestCandle = context.marketData.ohlcv[context.marketData.ohlcv.length - 1];
+    const currentPrice = latestCandle?.close;
 
-    let unrealizedPnL = 0;
-    for (const pos of positions) {
-      const currentPrice = context.marketData.ohlcv[context.marketData.ohlcv.length - 1].close;
-      const side = pos.side;
-      const leverage = pos.leverage;
-
-      let pnl: number;
-      if (side === 'long') {
-        pnl = ((currentPrice - pos.entryPrice) / pos.entryPrice) * leverage * 100;
-      } else {
-        pnl = ((pos.entryPrice - currentPrice) / pos.entryPrice) * leverage * 100;
-      }
-      unrealizedPnL += pnl;
-    }
-
-    const drawdownPercent = 0;
+    const unrealizedPnLUsd = this.calculateUnrealizedPnlUsd(positions, currentPrice);
+    const equity = balance + unrealizedPnLUsd;
+    const drawdownPercent = this.calculateDrawdownPercent(equity);
+    this.circuitBreakerActive = drawdownPercent >= this.riskConfig.maxDrawdown;
 
     return {
       balance,
       positions,
       signal,
-      positionMetrics: this.updatePositionMetrics(positions, balance),
+      positionMetrics: this.updatePositionMetrics(positions, drawdownPercent),
       tradeMetrics: this.tradeMetrics,
       totalExposure,
       drawdownPercent,
       circuitBreakerTriggered: this.circuitBreakerActive,
-      analysis: this.analyzeRiskFactors(balance, unrealizedPnL, drawdownPercent, signal)
+      analysis: this.analyzeRiskFactors(balance, unrealizedPnLUsd, drawdownPercent, signal)
     };
   }
 
-  private analyzeRiskFactors(balance: number, unrealizedPnL: number, drawdownPercent: number, signal: CompositeSignal): RiskFactors {
+  private analyzeRiskFactors(balance: number, unrealizedPnL: number, drawdownPercent: number, signal: CompositeSignal | null): RiskFactors {
     const drawdownRisk = this.assessDrawdownRisk(drawdownPercent, this.riskConfig.maxDrawdown);
     const exposureRisk = this.assessExposureRisk(balance, this.positionMetrics.totalExposureUSD);
     const concentrationRisk = this.assessConcentrationRisk(this.positionMetrics.openPositions, this.riskConfig.maxPositionsLive);
@@ -200,28 +188,63 @@ export class RiskManagementAgent extends BaseAgent {
     return 'low';
   }
 
-  private calculateOverallRisk(drawdownRisk: string, exposureRisk: string, concentrationRisk: string): string {
+  private calculateOverallRisk(drawdownRisk: string, exposureRisk: string, concentrationRisk: string): 'low' | 'medium' | 'high' | 'critical' {
     const risks = [drawdownRisk, exposureRisk, concentrationRisk];
     const highCount = risks.filter(r => r === 'high' || r === 'critical').length;
 
     if (highCount >= 2) return 'critical';
     if (highCount >= 1) return 'high';
+    if (risks.some(r => r === 'medium')) return 'medium';
     return 'low';
   }
 
-  private updatePositionMetrics(positions: Position[], balance: number): PositionMetrics {
-    const openPositions = positions.filter(p => p.stopLoss === null || p.takeProfit === null);
+  private updatePositionMetrics(positions: Position[], drawdownPercent: number): PositionMetrics {
+    const openPositions = positions.filter((p) => p.size > 0);
     const totalExposureUSD = positions.reduce((sum, p) => sum + (p.size * p.entryPrice), 0);
 
     return {
       openPositions: openPositions.length,
       totalExposureUSD,
-      drawdownPercent: this.positionMetrics.drawdownPercent,
+      drawdownPercent,
       dailyPnL: this.positionMetrics.dailyPnL,
       maxDailyDrawdown: this.positionMetrics.maxDailyDrawdown,
       consecutiveLosses: this.positionMetrics.consecutiveLosses,
       totalWinRate: this.tradeMetrics.winRate
     };
+  }
+
+  private calculateUnrealizedPnlUsd(positions: Position[], currentPrice?: number): number {
+    let unrealizedPnl = 0;
+
+    for (const pos of positions) {
+      if (Number.isFinite(pos.pnl)) {
+        unrealizedPnl += pos.pnl;
+        continue;
+      }
+
+      if (!currentPrice || !Number.isFinite(currentPrice) || !pos.entryPrice) continue;
+
+      const directionalMove =
+        pos.side === 'long'
+          ? (currentPrice - pos.entryPrice) / pos.entryPrice
+          : (pos.entryPrice - currentPrice) / pos.entryPrice;
+      unrealizedPnl += directionalMove * pos.entryPrice * pos.size;
+    }
+
+    return unrealizedPnl;
+  }
+
+  private calculateDrawdownPercent(equity: number): number {
+    if (this.dailyBalance === 0) {
+      this.dailyBalance = equity;
+    }
+
+    this.dailyBalance = Math.max(this.dailyBalance, equity);
+    if (this.dailyBalance <= 0) return 0;
+
+    const drawdown = ((this.dailyBalance - equity) / this.dailyBalance) * 100;
+    this.maxDailyDrawdown = Math.max(this.maxDailyDrawdown, drawdown);
+    return Math.max(0, drawdown);
   }
 
   private generateRecommendations(context: AgentContext, analysis: RiskAnalysis): RiskRecommendation[] {
@@ -291,7 +314,7 @@ export class RiskManagementAgent extends BaseAgent {
 
     return recommendations.sort((a, b) => {
       const order = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
-      return order[a.priority] - b.priority;
+      return order[a.priority] - order[b.priority];
     });
   }
 
@@ -331,7 +354,7 @@ export class RiskManagementAgent extends BaseAgent {
     }
 
     return {
-      newStopLoss: position.stopLoss,
+      newStopLoss: position.stopLoss || position.entryPrice,
       activated: false
     };
   }
@@ -354,7 +377,7 @@ export class RiskManagementAgent extends BaseAgent {
     }
 
     return {
-      newStopLoss: position.stopLoss,
+      newStopLoss: position.stopLoss || position.entryPrice,
       activated: false
     };
   }
@@ -392,7 +415,7 @@ export class RiskManagementAgent extends BaseAgent {
     });
   }
 
-  updateDailyMetrics(balanace: number, pnl: number, win: boolean): void {
+  updateDailyMetrics(balance: number, pnl: number, win: boolean): void {
     this.dailyPnL += pnl;
 
     if (win) {

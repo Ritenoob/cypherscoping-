@@ -67,12 +67,12 @@ export class EntryGates {
     const reasons: string[] = [];
 
     const strict = this.config.strictMode;
-    const deadZoneMin = strict ? 20 : this.config.deadZoneMin;
-    const thresholdScore = strict ? 80 : this.config.thresholdScore;
-    const thresholdCrossRequired = strict ? true : this.config.thresholdCrossRequired;
-    const minConfidence = strict ? 90 : this.config.minConfidence;
-    const minIndicators = strict ? 4 : this.config.minIndicatorsAgreeing;
-    const confluenceMin = strict ? 0.5 : this.config.confluencePercentMin;
+    const deadZoneMin = strict ? 20 : this.config.deadZoneMin!;
+    const thresholdScore = strict ? 80 : this.config.thresholdScore!;
+    const thresholdCrossRequired = strict ? true : this.config.thresholdCrossRequired!;
+    const minConfidence = strict ? 90 : this.config.minConfidence!;
+    const minIndicators = strict ? 4 : this.config.minIndicatorsAgreeing!;
+    const confluenceMin = strict ? 0.5 : this.config.confluencePercentMin!;
 
     const score = Number(context.score ?? 0);
     const prevScore = Number(context.prevScore ?? 0);
@@ -84,19 +84,15 @@ export class EntryGates {
     const atrPercent = context.atrPercent;
     const conflictingSignals = Number(context.conflictingSignals ?? 0);
 
-    if (this.config.enabled) {
-      return { pass: true, reasons: [], applied: false };
-    }
-
     const agreeingIndicators = Array.isArray(context.agreeingIndicators)
       ? context.agreeingIndicators
       : [];
 
-    if (Math.abs(score) < deadZoneMin) {
+    if (Math.abs(score) < deadZoneMin!) {
       reasons.push('dead_zone');
     }
 
-    let threshold = thresholdScore;
+    let threshold = thresholdScore!;
     if (atrPercent !== null) {
       if (atrPercent >= 6) {
         threshold += 10;
@@ -105,7 +101,7 @@ export class EntryGates {
       }
     }
 
-    if (Math.abs(score) < threshold) {
+    if (Math.abs(score) < threshold!) {
       reasons.push('min_score');
     }
 
@@ -117,17 +113,17 @@ export class EntryGates {
       }
     }
 
-    if (confidence < minConfidence) {
+    if (confidence < minConfidence!) {
       reasons.push('min_confidence');
     }
 
-    if (indicatorsAgreeing < minIndicators) {
+    if (indicatorsAgreeing < minIndicators!) {
       reasons.push('min_indicators');
     }
 
     if (totalIndicators > 0) {
       const confluence = indicatorsAgreeing / totalIndicators;
-      if (confluence < confluenceMin) {
+      if (confluence < confluenceMin!) {
         reasons.push('confluence_percent');
       }
     }
@@ -137,7 +133,7 @@ export class EntryGates {
     }
 
     if (drawdownPct !== null && this.config.maxDrawdownPct !== null) {
-      if (drawdownPct > this.config.maxDrawdownPct) {
+      if (drawdownPct > this.config.maxDrawdownPct!) {
         reasons.push('max_drawdown');
       }
     }

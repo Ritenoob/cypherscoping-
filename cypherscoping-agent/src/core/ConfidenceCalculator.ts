@@ -39,19 +39,19 @@ export class ConfidenceCalculator {
     const conflictingSignals = Number(context.conflictingSignals || 0);
 
     if (isChoppy) {
-      confidence -= this.config.chopPenalty;
+      confidence -= this.config.chopPenalty!;
     }
 
     if (atrPercent !== undefined && atrPercent !== null) {
-      if (atrPercent >= this.config.volHighThreshold) {
-        confidence -= this.config.volPenaltyHigh;
-      } else if (atrPercent >= this.config.volMediumThreshold) {
-        confidence -= this.config.volPenaltyMedium;
+      if (atrPercent >= this.config.volHighThreshold!) {
+        confidence -= this.config.volPenaltyHigh!;
+      } else if (atrPercent >= this.config.volMediumThreshold!) {
+        confidence -= this.config.volPenaltyMedium!;
       }
     }
 
     if (conflictingSignals > 0) {
-      confidence -= conflictingSignals * this.config.conflictPenaltyPerSignal;
+      confidence -= conflictingSignals * this.config.conflictPenaltyPerSignal!;
     }
 
     return Math.max(0, Math.min(100, confidence));

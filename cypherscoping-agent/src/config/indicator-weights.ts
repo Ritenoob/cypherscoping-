@@ -1,4 +1,4 @@
-export const V6_OPTIMIZED_WEIGHTS = {
+export const V6_OPTIMIZED_WEIGHTS: Record<string, any> = {
   RSI: {
     weight: 40,
     period: 21,

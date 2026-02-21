@@ -84,15 +84,18 @@ export interface AIAnalysis {
 
 export interface AgentContext {
   symbol: string;
+  correlationId?: string;
   timeframe: string;
   balance: number;
   positions: Position[];
   openOrders: any[];
   isLiveMode: boolean;
+  executionOptions?: AgentExecutionOptions;
   marketData: {
     ohlcv: OHLCV[];
     orderBook: OrderBookSnapshot | null;
     tradeFlow: TradeFlow | null;
+    microstructure?: any;
     signal?: CompositeSignal;
     aiAnalysis?: AIAnalysis;
   };
@@ -103,7 +106,18 @@ export interface AgentResult {
   action?: any;
   signal?: CompositeSignal;
   aiAnalysis?: AIAnalysis;
+  errorCode?: string;
+  meta?: {
+    durationMs?: number;
+    toolsScope?: 'restricted' | 'all';
+  };
   error?: string;
+}
+
+export interface AgentExecutionOptions {
+  allToolsAllowed: boolean;
+  optimizeExecution: boolean;
+  enabledTools: string[];
 }
 
 export interface OHLCVWithIndex extends OHLCV {
