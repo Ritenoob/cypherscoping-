@@ -2,6 +2,19 @@ import { BaseAgent, AgentMemory } from './base-agent';
 import { AgentContext, AgentResult, CompositeSignal, AIAnalysis, OHLCV, OHLCVWithIndex } from '../types';
 import { SignalGenerator } from '../core/SignalGenerator';
 import { WilliamsRIndicator } from '../indicators/WilliamsRIndicator';
+import { RSIIndicator } from '../indicators/RSIIndicator';
+import { MACDIndicator } from '../indicators/MACDIndicator';
+import { BollingerBandsIndicator } from '../indicators/BollingerBandsIndicator';
+import { StochasticIndicator } from '../indicators/StochasticIndicator';
+import { ATRIndicator } from '../indicators/ATRIndicator';
+import { ADXIndicator } from '../indicators/ADXIndicator';
+import { EMATrendIndicator } from '../indicators/EMATrendIndicator';
+import { AOIndicator } from '../indicators/AOIndicator';
+import { OBVIndicator } from '../indicators/OBVIndicator';
+import { KDJIndicator } from '../indicators/KDJIndicator';
+import { CMFIndicator } from '../indicators/CMFIndicator';
+import { KlingerIndicator } from '../indicators/KlingerIndicator';
+import { StochasticRSIIndicator } from '../indicators/StochasticRSIIndicator';
 
 export interface SignalContext {
   candleIndex: number;
@@ -16,6 +29,19 @@ export interface SignalContext {
 export class SignalAnalysisAgent extends BaseAgent {
   private signalGenerator: SignalGenerator;
   private williamsR: WilliamsRIndicator;
+  private readonly rsiIndicator: RSIIndicator;
+  private readonly macdIndicator: MACDIndicator;
+  private readonly bollingerBandsIndicator: BollingerBandsIndicator;
+  private readonly stochasticIndicator: StochasticIndicator;
+  private readonly atrIndicator: ATRIndicator;
+  private readonly adxIndicator: ADXIndicator;
+  private readonly emaTrendIndicator: EMATrendIndicator;
+  private readonly aoIndicator: AOIndicator;
+  private readonly obvIndicator: OBVIndicator;
+  private readonly kdjIndicator: KDJIndicator;
+  private readonly cmfIndicator: CMFIndicator;
+  private readonly klingerIndicator: KlingerIndicator;
+  private readonly stochasticRSIIndicator: StochasticRSIIndicator;
   private mlEngine: MLEngine;
   private signalHistory: Map<string, number[]> = new Map();
   private symbolCooldownUntil: Map<string, number> = new Map();
@@ -44,6 +70,19 @@ export class SignalAnalysisAgent extends BaseAgent {
       oversold: -80,
       overbought: -20
     });
+    this.rsiIndicator = new RSIIndicator();
+    this.macdIndicator = new MACDIndicator();
+    this.bollingerBandsIndicator = new BollingerBandsIndicator();
+    this.stochasticIndicator = new StochasticIndicator();
+    this.atrIndicator = new ATRIndicator();
+    this.adxIndicator = new ADXIndicator();
+    this.emaTrendIndicator = new EMATrendIndicator();
+    this.aoIndicator = new AOIndicator();
+    this.obvIndicator = new OBVIndicator();
+    this.kdjIndicator = new KDJIndicator();
+    this.cmfIndicator = new CMFIndicator();
+    this.klingerIndicator = new KlingerIndicator();
+    this.stochasticRSIIndicator = new StochasticRSIIndicator();
     this.mlEngine = new MLEngine();
   }
 
@@ -152,19 +191,19 @@ export class SignalAnalysisAgent extends BaseAgent {
 
     const indicatorResults = {
       williamsR: this.williamsR.getResult(),
-      rsi: this.calculateRSI(closes, 21),
-      stochRSI: this.calculateStochRSI(closes, 14, 14, 3, 3),
-      macd: this.calculateMACD(closes, 12, 26, 9),
-      bollinger: this.calculateBollingerBands(closes, 20, 2.0),
-      stochastic: this.calculateStochastic(highs, lows, closes, 14, 3),
-      kdj: this.calculateKDJ(highs, lows, closes, 9, 3, 3),
-      emaTrend: this.calculateEMATrend(closes, 9, 25, 50),
-      ao: this.calculateAO(highs, lows, 5, 34),
-      obv: this.calculateOBV(closes, volumes),
-      cmf: this.calculateCMF(highs, lows, closes, volumes, 20),
-      klinger: this.calculateKlinger(highs, lows, closes, volumes, 34, 55, 13),
-      adx: this.calculateADX(highs, lows, closes, 14),
-      atr: this.calculateATR(highs, lows, closes, 14)
+      rsi: this.rsiIndicator.calculate(closes, 21),
+      stochRSI: this.stochasticRSIIndicator.calculate(closes, 14, 14, 3, 3),
+      macd: this.macdIndicator.calculate(closes, 12, 26, 9),
+      bollinger: this.bollingerBandsIndicator.calculate(closes, 20, 2.0),
+      stochastic: this.stochasticIndicator.calculate(highs, lows, closes, 14, 3),
+      kdj: this.kdjIndicator.calculate(highs, lows, closes, 9, 3, 3),
+      emaTrend: this.emaTrendIndicator.calculate(closes, 9, 25, 50),
+      ao: this.aoIndicator.calculate(highs, lows, 5, 34),
+      obv: this.obvIndicator.calculate(closes, volumes),
+      cmf: this.cmfIndicator.calculate(highs, lows, closes, volumes, 20),
+      klinger: this.klingerIndicator.calculate(highs, lows, closes, volumes, 34, 55, 13),
+      adx: this.adxIndicator.calculate(highs, lows, closes, 14),
+      atr: this.atrIndicator.calculate(highs, lows, closes, 14)
     };
 
     const microstructure = context.marketData.microstructure || {
@@ -623,7 +662,12 @@ export class SignalAnalysisAgent extends BaseAgent {
   private calculateATRPercent(ohlcv: OHLCV[]): number {
     if (ohlcv.length < 20) return 2;
 
-    const { atrPercent } = this.calculateATR(ohlcv.map(c => c.high), ohlcv.map(c => c.low), ohlcv.map(c => c.close), 14);
+    const { atrPercent } = this.atrIndicator.calculate(
+      ohlcv.map((c) => c.high),
+      ohlcv.map((c) => c.low),
+      ohlcv.map((c) => c.close),
+      14
+    );
     return atrPercent;
   }
 
@@ -648,8 +692,9 @@ export class SignalAnalysisAgent extends BaseAgent {
     let rsiSignals = 0;
     let macdSignals = 0;
 
-    const rsi = this.calculateRSI(ohlcv.map(c => c.close), 21);
-    const macd = this.calculateMACD(ohlcv.map(c => c.close), 12, 26, 9);
+    const closes = ohlcv.map((c) => c.close);
+    const rsi = this.rsiIndicator.calculate(closes, 21);
+    const macd = this.macdIndicator.calculate(closes, 12, 26, 9);
 
     if (rsi.signal === 'bullish') rsiSignals++;
     else if (rsi.signal === 'bearish') rsiSignals--;

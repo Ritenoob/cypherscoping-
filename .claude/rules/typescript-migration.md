@@ -2,7 +2,7 @@
 
 Continuing the JavaScript → TypeScript migration.
 
-## Current Status (95% Complete)
+## Current Status (Indicator Migration Complete)
 
 **Complete:**
 - ✅ Agent architecture (6 agents)
@@ -10,15 +10,15 @@ Continuing the JavaScript → TypeScript migration.
 - ✅ Symbol policy & risk controls
 - ✅ Audit logging & idempotency
 - ✅ Core signal generation
-- ✅ Test harness (26/26 passing)
+- ✅ Indicator migration (18/18 complete)
+- ✅ Rate limiting (p-limit controls)
+- ✅ Test harness (95/95 passing)
 
 **In Progress:**
-- 🚧 KuCoin API integration (stub exists)
-- 🚧 Indicator migration (1/18 complete)
-- 🚧 Rate limiting
+- 🚧 KuCoin live API parity hardening
 - 🚧 Dashboard integration
 
-**Blocking:** KuCoin API client needs TypeScript conversion.
+**Blocking:** None for paper-trading validation. Live deployment still requires final KuCoin parity checks.
 
 ## File Mapping
 
@@ -28,8 +28,8 @@ Continuing the JavaScript → TypeScript migration.
 | `agents/signal-agent.js` | `src/agents/signal-analysis-agent.ts` | ✅ Complete |
 | `agents/execution-agent.js` | `src/agents/trading-executor-agent.ts` | ✅ Complete |
 | `agents/risk-agent.js` | `src/agents/risk-management-agent.ts` | ✅ Complete |
-| `config/apiClient.js` | ❌ Not started | 🚧 BLOCKING |
-| `src/indicators/` (18 files) | `src/indicators/` (1 file) | 🚧 In progress |
+| `config/apiClient.js` | `src/agents/coin-screener-agent.ts` provider path | 🚧 Partial parity |
+| `src/indicators/` (18 files) | `src/indicators/` (18 files) | ✅ Complete |
 
 ## Migration Workflow
 
@@ -85,8 +85,8 @@ import { calculateRSI } from '../indicators/RSIIndicator';
 
 **Before Production:**
 1. Fix 3 HIGH-priority issues (see `CODEX_CONTINUATION_ANALYSIS.md`)
-2. Complete KuCoin API integration
-3. Add rate limiting
+2. Complete KuCoin API live parity validation
+3. Verify paper-trading monitor + validation scripts
 4. Run 100+ paper trades
 5. Validate all safety controls
 
@@ -143,14 +143,13 @@ describe('TradingExecutor', () => {
 });
 ```
 
-## Next Files to Migrate
+## Next Hardening Targets
 
 **Priority Order:**
-1. `config/apiClient.js` → TypeScript (BLOCKING)
-2. `src/indicators/RSIIndicator.js`
-3. `src/indicators/MACDIndicator.js`
-4. `src/indicators/BollingerBands.js`
-5. `server.js` (dashboard)
+1. `scripts/monitor-paper-trading.sh` session-based operational monitoring
+2. `scripts/validate-phase-2-3.sh` safety validation fidelity
+3. KuCoin live execution parity tests
+4. Dashboard integration (`server.js` path)
 
 ## References
 

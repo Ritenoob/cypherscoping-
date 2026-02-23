@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import pLimit from 'p-limit';
+import Bottleneck from 'bottleneck';
 import { BaseAgent } from './base-agent';
 import { AgentContext, AgentResult, OHLCV, CompositeSignal } from '../types';
 import { loadSymbolPolicy, validateSymbolPolicy } from '../config/symbol-policy';
@@ -9,6 +9,7 @@ export class CoinScreenerAgent extends BaseAgent {
   private watchedSymbols: Map<string, ScreenerResult> = new Map();
   private readonly maxConcurrentScans: number = 5;
   private provider: MarketDataProvider;
+  private symbolsInitialized: boolean = false;
 
   constructor(symbols?: string[]) {
     super({
@@ -19,19 +20,67 @@ export class CoinScreenerAgent extends BaseAgent {
       maxConcurrentTasks: 20,
       priority: 1
     });
-    const symbolPolicy = loadSymbolPolicy();
-    this.symbols = (symbols && symbols.length > 0 ? symbols : symbolPolicy.tradingUniverse).filter((symbol) => {
-      const validation = validateSymbolPolicy(symbol, symbolPolicy);
-      return validation.allowed;
-    });
-    if (this.symbols.length === 0) {
-      throw new Error('E_UNIVERSE_EMPTY: no allowed symbols available for screener');
+
+    // If explicit symbols provided, use them immediately
+    if (symbols && symbols.length > 0) {
+      const symbolPolicy = loadSymbolPolicy();
+      this.symbols = symbols.filter((symbol) => {
+        const validation = validateSymbolPolicy(symbol, symbolPolicy);
+        return validation.allowed;
+      });
+      this.symbolsInitialized = true;
+
+      if (this.symbols.length === 0) {
+        throw new Error('E_UNIVERSE_EMPTY: no allowed symbols available for screener');
+      }
     }
+    // Otherwise, symbols will be fetched dynamically during initialize()
+
     this.provider = this.createDataProvider();
   }
 
   async initialize(): Promise<void> {
     await this.provider.connect();
+
+    // Fetch dynamic symbols if not already initialized
+    if (!this.symbolsInitialized) {
+      await this.initializeSymbols();
+    }
+  }
+
+  private async initializeSymbols(): Promise<void> {
+    const symbolPolicy = loadSymbolPolicy();
+
+    // Check for manual override via TRADING_UNIVERSE env var
+    if (process.env.TRADING_UNIVERSE && process.env.TRADING_UNIVERSE.trim().length > 0) {
+      console.log('[CoinScreener] Using TRADING_UNIVERSE override instead of dynamic market scan');
+      this.symbols = symbolPolicy.tradingUniverse.filter((symbol) => {
+        const validation = validateSymbolPolicy(symbol, symbolPolicy);
+        return validation.allowed;
+      });
+    } else {
+      // Fetch all active perpetual futures symbols from KuCoin
+      console.log('[CoinScreener] Fetching active perpetual futures symbols from KuCoin...');
+      const allSymbols = await this.provider.fetchActiveSymbols();
+      console.log(`[CoinScreener] Found ${allSymbols.length} active perpetual futures markets`);
+
+      // Apply symbol policy filtering
+      this.symbols = allSymbols.filter((symbol) => {
+        const validation = validateSymbolPolicy(symbol, symbolPolicy);
+        if (!validation.allowed && validation.code === 'E_SYMBOL_DENIED') {
+          console.log(`[CoinScreener] Filtering out denied symbol: ${symbol}`);
+        }
+        return validation.allowed;
+      });
+
+      console.log(`[CoinScreener] After policy filtering: ${this.symbols.length} allowed symbols`);
+    }
+
+    if (this.symbols.length === 0) {
+      throw new Error('E_UNIVERSE_EMPTY: no allowed symbols available for screener');
+    }
+
+    this.symbolsInitialized = true;
   }
 
   async execute(context: AgentContext): Promise<AgentResult> {
@@ -83,23 +132,15 @@ export class CoinScreenerAgent extends BaseAgent {
       if (simulationEnabled) {
         throw new Error('Invalid configuration: live mode cannot use simulated market data');
       }
-      this.assertLiveCredentials();
-      return new KucoinPerpDataProvider();
+      // Note: Credentials validated later during trading operations, not for market data
+      console.log('[CoinScreener] Using KuCoin public API for market data (no credentials required)');
     }
 
-    if (forcedProvider === 'kucoin') {
+    if (forcedProvider === 'kucoin' || mode === 'live') {
       return new KucoinPerpDataProvider();
     }
 
     return new MockMarketDataProvider();
-  }
-
-  private assertLiveCredentials(): void {
-    const required = ['KUCOIN_API_KEY', 'KUCOIN_API_SECRET', 'KUCOIN_API_PASSPHRASE'] as const;
-    const missing = required.filter((name) => !(process.env[name] || '').trim());
-    if (missing.length > 0) {
-      throw new Error(`E_MISSING_CREDENTIALS: Live mode requires ${missing.join(', ')}`);
-    }
   }
 
   private async scanMarket(): Promise<ScreenerResult[]> {
@@ -349,6 +390,7 @@ interface MarketDataProvider {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   fetch(symbol: string, timeframe: string, limit: number): Promise<MarketData | null>;
+  fetchActiveSymbols(): Promise<string[]>;
   isMock(): boolean;
 }
 
@@ -363,6 +405,26 @@ class MockMarketDataProvider implements MarketDataProvider {
 
   isMock(): boolean {
     return true;
+  }
+
+  async fetchActiveSymbols(): Promise<string[]> {
+    // Return default perpetual futures symbols for testing
+    return [
+      'ETHUSDTM',
+      'SOLUSDTM',
+      'XRPUSDTM',
+      'ADAUSDTM',
+      'DOGEUSDTM',
+      'MATICUSDTM',
+      'LINKUSDTM',
+      'AVAXUSDTM',
+      'DOTUSDTM',
+      'UNIUSDTM',
+      'ATOMUSDTM',
+      'LTCUSDTM',
+      'BCHUSDTM',
+      'ETCUSDTM'
+    ];
   }
 
   async fetch(symbol: string, timeframe: string, limit: number): Promise<MarketData | null> {
@@ -415,21 +477,68 @@ class MockMarketDataProvider implements MarketDataProvider {
 
 class KucoinPerpDataProvider implements MarketDataProvider {
   private readonly client: AxiosInstance;
-  private readonly rateLimiter: ReturnType<typeof pLimit>;
+  private readonly rateLimiter: Bottleneck;
+  private symbolCache: { symbols: string[]; timestamp: number } | null = null;
+  private readonly SYMBOL_CACHE_TTL = 3600000; // 1 hour in milliseconds
+
+  private static readonly ALLOWED_BASE_URLS = [
+    'https://api-futures.kucoin.com',
+    'https://api-sandbox-futures.kucoin.com'
+  ];
+
+  private static validateBaseURL(url: string): string {
+    if (!KucoinPerpDataProvider.ALLOWED_BASE_URLS.includes(url)) {
+      throw new Error(
+        `E_INVALID_BASE_URL: ${url} is not an allowed KuCoin endpoint. ` +
+        `Allowed: ${KucoinPerpDataProvider.ALLOWED_BASE_URLS.join(', ')}`
+      );
+    }
+    return url;
+  }
 
   constructor() {
+    const baseURL = process.env.KUCOIN_API_BASE_URL || 'https://api-futures.kucoin.com';
     this.client = axios.create({
-      baseURL: process.env.KUCOIN_API_BASE_URL || 'https://api-futures.kucoin.com',
+      baseURL: KucoinPerpDataProvider.validateBaseURL(baseURL),
       timeout: 10000
     });
-    const configuredConcurrency = Number(process.env.KUCOIN_MAX_CONCURRENT_REQUESTS || 3);
-    const concurrency =
-      Number.isFinite(configuredConcurrency) && configuredConcurrency > 0 ? Math.floor(configuredConcurrency) : 3;
-    this.rateLimiter = pLimit(concurrency);
+
+    // Configure rate limiting for PUBLIC endpoints
+    // KuCoin Public Futures API: 4,000 requests per 30 seconds (VIP0, no auth)
+    // OHLCV weight = 3, so ~1,333 kline requests per 30s
+    // Reference: https://www.kucoin.com/docs-new/rate-limit
+    const configuredConcurrency = Number(process.env.KUCOIN_MAX_CONCURRENT_REQUESTS || 10);
+    const maxConcurrent = Math.min(
+      20,  // Upper bound for public endpoints (higher than authenticated)
+      Number.isFinite(configuredConcurrency) && configuredConcurrency > 0
+        ? Math.floor(configuredConcurrency)
+        : 10
+    );
+
+    this.rateLimiter = new Bottleneck({
+      maxConcurrent,                // Max 10 simultaneous requests (configurable)
+      minTime: 25,                  // Min 25ms between requests = max 40 req/sec per worker
+      reservoir: 1333,              // Token bucket: 1,333 OHLCV requests (4000/weight3)
+      reservoirRefreshAmount: 1333, // Refill to 1,333
+      reservoirRefreshInterval: 30000  // Every 30 seconds (public API quota)
+    });
+
+    // Retry on 429 (rate limit exceeded) with exponential backoff
+    this.rateLimiter.on('failed', async (error: any, jobInfo) => {
+      if (error?.response?.status === 429) {
+        const retryAfter = Number(error.response.headers['retry-after']) || 5;
+        console.warn(`[RateLimit] 429 received, retrying after ${retryAfter}s`);
+        return retryAfter * 1000; // Return delay in ms to trigger retry
+      }
+      // Don't retry other errors
+      return undefined;
+    });
   }
 
   async connect(): Promise<void> {
+    // Public endpoint - no authentication required
     await this.client.get('/api/v1/timestamp');
+    console.log('[KuCoinProvider] Connected to KuCoin public API (no credentials required)');
   }
 
   async disconnect(): Promise<void> {
@@ -440,11 +549,64 @@ class KucoinPerpDataProvider implements MarketDataProvider {
     return false;
   }
 
+  async fetchActiveSymbols(): Promise<string[]> {
+    // Check cache first
+    const now = Date.now();
+    if (this.symbolCache && (now - this.symbolCache.timestamp) < this.SYMBOL_CACHE_TTL) {
+      console.log(`[KuCoinProvider] Using cached symbols (${this.symbolCache.symbols.length} symbols)`);
+      return this.symbolCache.symbols;
+    }
+
+    return this.rateLimiter.schedule(async () => {
+      const endpoint = '/api/v1/contracts/active';
+
+      try {
+        const response = await this.client.get(endpoint);
+
+        if (response.data?.code !== '200000') {
+          throw new Error(response.data?.msg || 'KuCoin active contracts request failed');
+        }
+
+        const contracts = response.data?.data;
+        if (!Array.isArray(contracts)) {
+          throw new Error('Invalid response format from KuCoin active contracts endpoint');
+        }
+
+        // Extract symbols from active contracts
+        // KuCoin returns objects with a "symbol" field (e.g., "ETHUSDTM")
+        const symbols = contracts
+          .map((contract: any) => contract.symbol)
+          .filter((symbol: string) => typeof symbol === 'string' && symbol.length > 0);
+
+        console.log(`[KuCoinProvider] Fetched ${symbols.length} active perpetual futures symbols`);
+
+        // Update cache
+        this.symbolCache = {
+          symbols,
+          timestamp: Date.now()
+        };
+
+        return symbols;
+      } catch (error) {
+        const err = error as Error;
+        console.error(`[KuCoinProvider] Failed to fetch active symbols: ${err.message}`);
+
+        // If we have stale cache, return it as fallback
+        if (this.symbolCache) {
+          console.warn('[KuCoinProvider] Using stale cache as fallback');
+          return this.symbolCache.symbols;
+        }
+
+        throw error;
+      }
+    });
+  }
+
   async fetch(symbol: string, timeframe: string, limit: number): Promise<MarketData | null> {
-    return this.rateLimiter(async () => {
+    return this.rateLimiter.schedule(async () => {
       const granularity = this.toGranularity(timeframe);
-      const endAt = Math.floor(Date.now() / 1000);
-      const startAt = endAt - granularity * limit;
+      const endAt = Date.now(); // KuCoin expects milliseconds
+      const startAt = endAt - (granularity * 60 * 1000 * limit); // Convert minutes to milliseconds
       const endpoint = `/api/v1/kline/query?symbol=${encodeURIComponent(symbol)}&granularity=${granularity}&from=${startAt}&to=${endAt}`;
 
       const response = await this.client.get(endpoint);
@@ -459,11 +621,11 @@ class KucoinPerpDataProvider implements MarketDataProvider {
 
       const ohlcv = rows
         .map((row: any[]) => ({
-          timestamp: Number(row[0]) * 1000,
+          timestamp: Number(row[0]), // Already in milliseconds
           open: Number(row[1]),
-          high: Number(row[3]),
-          low: Number(row[4]),
-          close: Number(row[2]),
+          high: Number(row[2]),
+          low: Number(row[3]),
+          close: Number(row[4]),
           volume: Number(row[5])
         }))
         .filter((c: OHLCV) => Number.isFinite(c.close) && c.close > 0)

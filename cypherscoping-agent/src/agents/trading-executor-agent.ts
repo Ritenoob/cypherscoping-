@@ -1154,12 +1154,28 @@ class KucoinPerpExchangeAdapter implements ExchangeAdapter {
   private readonly apiSecret: string;
   private readonly apiPassphrase: string;
 
+  private static readonly ALLOWED_BASE_URLS = [
+    'https://api-futures.kucoin.com',
+    'https://api-sandbox-futures.kucoin.com'
+  ];
+
+  private static validateBaseURL(url: string): string {
+    if (!KucoinPerpExchangeAdapter.ALLOWED_BASE_URLS.includes(url)) {
+      throw new Error(
+        `E_INVALID_BASE_URL: ${url} is not an allowed KuCoin endpoint. ` +
+        `Allowed: ${KucoinPerpExchangeAdapter.ALLOWED_BASE_URLS.join(', ')}`
+      );
+    }
+    return url;
+  }
+
   constructor(apiKey: string, apiSecret: string, apiPassphrase: string) {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
     this.apiPassphrase = apiPassphrase;
+    const baseURL = process.env.KUCOIN_API_BASE_URL || 'https://api-futures.kucoin.com';
     this.client = axios.create({
-      baseURL: process.env.KUCOIN_API_BASE_URL || 'https://api-futures.kucoin.com',
+      baseURL: KucoinPerpExchangeAdapter.validateBaseURL(baseURL),
       timeout: 10000
     });
   }

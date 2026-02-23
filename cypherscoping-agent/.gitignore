@@ -1,0 +1,26 @@
+# Environment variables with secrets
+.env
+*.env
+.env.*
+!.env.example
+
+# Runtime data
+runtime/
+*.log
+audit.log
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+*.tsbuildinfo
+*.js.map
+*.d.ts.map
+
+# Testing
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
