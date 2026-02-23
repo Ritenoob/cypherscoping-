@@ -37,6 +37,8 @@ export class TradingExecutorAgent extends BaseAgent {
   private readonly signalTypeRegimePolicy: Map<string, Set<MarketRegime>>;
   private readonly minStrengthByRegime: Map<MarketRegime, SignalStrength>;
   private lossStreak: number = 0;
+  private lastTradeTimestamp: number = 0;
+  private tradeTimestamps: number[] = [];
   private riskParams = {
     stopLossROI: 10,
     takeProfitROI: 30,
@@ -62,7 +64,11 @@ export class TradingExecutorAgent extends BaseAgent {
     killswitchMinTrades: Number(process.env.KILLSWITCH_MIN_TRADES || 4),
     killswitchMinExpectancy: Number(process.env.KILLSWITCH_MIN_EXPECTANCY || -0.1),
     killswitchMinProfitFactor: Number(process.env.KILLSWITCH_MIN_PROFIT_FACTOR || 0.8),
-    killswitchMaxDrawdown: Number(process.env.KILLSWITCH_MAX_DRAWDOWN || 2.5)
+    killswitchMaxDrawdown: Number(process.env.KILLSWITCH_MAX_DRAWDOWN || 2.5),
+    maxConsecutiveLosses: Number(process.env.MAX_CONSECUTIVE_LOSSES || 5),
+    burstRateLimitMs: Number(process.env.BURST_RATE_LIMIT_MS || 30000),
+    maxTradesPerHour: Number(process.env.MAX_TRADES_PER_HOUR || 5),
+    hourlyRateLimitWindowMs: 60 * 60 * 1000  // 1 hour
   };
 
   constructor() {
@@ -164,6 +170,11 @@ export class TradingExecutorAgent extends BaseAgent {
     }
 
     const featureKey = this.buildFeatureKey(signal, aiAnalysis);
+
+    // CRITICAL: Evaluate feature health BEFORE opening position (not just after closing)
+    // This prevents burst-mode execution from bypassing killswitch
+    this.evaluateFeatureHealth(featureKey);
+
     if (!this.isFeatureEnabled(featureKey)) {
       return {
         success: true,
@@ -359,6 +370,75 @@ export class TradingExecutorAgent extends BaseAgent {
       };
     }
 
+    // Check consecutive loss limit
+    if (this.lossStreak >= this.riskParams.maxConsecutiveLosses) {
+      await this.safeAudit({
+        timestamp: Date.now(),
+        eventType: 'risk_rejection',
+        correlationId,
+        component: 'trading-executor',
+        severity: 'error',
+        payload: { symbol, code: 'E_CONSECUTIVE_LOSS_LIMIT', consecutiveLosses: this.lossStreak, maxAllowed: this.riskParams.maxConsecutiveLosses }
+      });
+      return {
+        success: false,
+        errorCode: 'E_CONSECUTIVE_LOSS_LIMIT',
+        error: `Trading halted: ${this.lossStreak} consecutive losses (max: ${this.riskParams.maxConsecutiveLosses})`
+      };
+    }
+
+    // Check burst rate limit (prevent multiple trades in quick succession)
+    const now = Date.now();
+    const timeSinceLastTrade = now - this.lastTradeTimestamp;
+    if (this.lastTradeTimestamp > 0 && timeSinceLastTrade < this.riskParams.burstRateLimitMs) {
+      await this.safeAudit({
+        timestamp: now,
+        eventType: 'risk_rejection',
+        correlationId,
+        component: 'trading-executor',
+        severity: 'warn',
+        payload: {
+          symbol,
+          code: 'E_BURST_RATE_LIMIT',
+          timeSinceLastTrade,
+          burstRateLimitMs: this.riskParams.burstRateLimitMs,
+          remainingCooldown: this.riskParams.burstRateLimitMs - timeSinceLastTrade
+        }
+      });
+      return {
+        success: false,
+        errorCode: 'E_BURST_RATE_LIMIT',
+        error: `Burst rate limit: ${(timeSinceLastTrade / 1000).toFixed(1)}s since last trade (min: ${(this.riskParams.burstRateLimitMs / 1000).toFixed(0)}s)`
+      };
+    }
+
+    // Check hourly trade rate limit (max 5 trades per hour across all symbols)
+    const hourAgo = now - this.riskParams.hourlyRateLimitWindowMs;
+    this.tradeTimestamps = this.tradeTimestamps.filter(ts => ts > hourAgo);
+    if (this.tradeTimestamps.length >= this.riskParams.maxTradesPerHour) {
+      const oldestTradeAge = now - this.tradeTimestamps[0];
+      const waitTimeMs = this.riskParams.hourlyRateLimitWindowMs - oldestTradeAge;
+      await this.safeAudit({
+        timestamp: now,
+        eventType: 'risk_rejection',
+        correlationId,
+        component: 'trading-executor',
+        severity: 'warn',
+        payload: {
+          symbol,
+          code: 'E_HOURLY_RATE_LIMIT',
+          tradesInLastHour: this.tradeTimestamps.length,
+          maxTradesPerHour: this.riskParams.maxTradesPerHour,
+          waitTimeMinutes: (waitTimeMs / (60 * 1000)).toFixed(1)
+        }
+      });
+      return {
+        success: false,
+        errorCode: 'E_HOURLY_RATE_LIMIT',
+        error: `Hourly rate limit: ${this.tradeTimestamps.length} trades in last hour (max: ${this.riskParams.maxTradesPerHour}). Wait ${(waitTimeMs / (60 * 1000)).toFixed(1)} minutes.`
+      };
+    }
+
     if (context.positions.length >= maxPositions) {
       return { success: false, error: `Max positions (${maxPositions}) reached` };
     }
@@ -481,6 +561,11 @@ export class TradingExecutorAgent extends BaseAgent {
         status: 'open',
         featureKey
       });
+
+      // Update last trade timestamp for burst rate limiting
+      const tradeTime = Date.now();
+      this.lastTradeTimestamp = tradeTime;
+      this.tradeTimestamps.push(tradeTime);
 
       this.positionLifecycle.set(symbol, {
         openedAt: Date.now(),
@@ -690,8 +775,9 @@ export class TradingExecutorAgent extends BaseAgent {
 
   private buildFeatureKey(signal: CompositeSignal, aiAnalysis: AIAnalysis): string {
     const type = signal.signalType || 'trend';
-    const strength = signal.signalStrength || 'weak';
-    return `${type}:${strength}:${aiAnalysis.marketRegime}`;
+    // Use coarser granularity (type:regime) instead of (type:strength:regime)
+    // This allows killswitch to accumulate sufficient history per feature
+    return `${type}:${aiAnalysis.marketRegime}`;
   }
 
   private evaluateRegimeCompatibility(
@@ -917,6 +1003,32 @@ export class TradingExecutorAgent extends BaseAgent {
     ) {
       perf.disabledUntil = Date.now() + this.riskParams.featureDisableMs;
       this.signalPerformance.set(featureKey, perf);
+
+      // CRITICAL: Audit log killswitch trigger for debugging
+      this.safeAudit({
+        timestamp: Date.now(),
+        eventType: 'killswitch_triggered',
+        correlationId: randomUUID(),
+        component: 'trading-executor',
+        severity: 'warn',
+        payload: {
+          featureKey,
+          reason: 'sliding_window_metrics',
+          metrics: {
+            recentTrades: recent.trades,
+            expectancy: recent.expectancy,
+            profitFactor: recent.profitFactor,
+            maxDrawdown: recent.maxDrawdown
+          },
+          thresholds: {
+            minExpectancy: this.riskParams.killswitchMinExpectancy,
+            minProfitFactor: this.riskParams.killswitchMinProfitFactor,
+            maxDrawdown: this.riskParams.killswitchMaxDrawdown
+          },
+          disabledUntil: perf.disabledUntil,
+          disabledForMs: this.riskParams.featureDisableMs
+        }
+      }).catch((err) => console.error('[TradingExecutor] Failed to audit killswitch trigger:', err));
       return;
     }
 
@@ -924,6 +1036,31 @@ export class TradingExecutorAgent extends BaseAgent {
     if (perf.expectancyPercent < 0 || perf.profitFactor < 0.9) {
       perf.disabledUntil = Date.now() + this.riskParams.featureDisableMs;
       this.signalPerformance.set(featureKey, perf);
+
+      // CRITICAL: Audit log killswitch trigger for debugging
+      this.safeAudit({
+        timestamp: Date.now(),
+        eventType: 'killswitch_triggered',
+        correlationId: randomUUID(),
+        component: 'trading-executor',
+        severity: 'warn',
+        payload: {
+          featureKey,
+          reason: 'feature_sample_check',
+          metrics: {
+            totalTrades: perf.trades,
+            expectancyPercent: perf.expectancyPercent,
+            profitFactor: perf.profitFactor
+          },
+          thresholds: {
+            minSample: this.riskParams.minFeatureSample,
+            minExpectancy: 0,
+            minProfitFactor: 0.9
+          },
+          disabledUntil: perf.disabledUntil,
+          disabledForMs: this.riskParams.featureDisableMs
+        }
+      }).catch((err) => console.error('[TradingExecutor] Failed to audit killswitch trigger:', err));
     }
   }
 

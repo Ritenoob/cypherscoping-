@@ -123,6 +123,45 @@ export class CypherScopeOrchestrator {
       })
     ]);
 
+    // CRITICAL FIX: Check risk result before executing trades
+    // Risk agent must be enforcing, not advisory
+    const riskAnalysis = riskResult.action?.analysis;
+    if (riskAnalysis && (riskAnalysis.circuitBreakerTriggered || riskAnalysis.overallRisk === 'critical')) {
+      await this.safeAudit({
+        timestamp: Date.now(),
+        eventType: 'execution_blocked',
+        correlationId,
+        component: 'orchestrator',
+        severity: 'warn',
+        payload: {
+          symbol,
+          reason: riskAnalysis.circuitBreakerTriggered ? 'circuit_breaker_active' : 'critical_risk',
+          riskAnalysis: {
+            circuitBreakerTriggered: riskAnalysis.circuitBreakerTriggered,
+            overallRisk: riskAnalysis.overallRisk,
+            drawdownPercent: riskAnalysis.drawdownPercent
+          }
+        }
+      });
+      const executionAction = {
+        type: 'blocked',
+        reason: riskAnalysis.circuitBreakerTriggered
+          ? `Circuit breaker active at ${riskAnalysis.drawdownPercent?.toFixed(2)}% drawdown`
+          : `Risk level: ${riskAnalysis.overallRisk}`
+      };
+      return {
+        symbol,
+        correlationId,
+        signal: signalResult.signal || this.createEmptySignal(),
+        aiAnalysis: signalResult.aiAnalysis || this.createDefaultAIAnalysis(),
+        riskAnalysis: riskResult.action,
+        execution: executionAction,
+        timestamp: Date.now(),
+        durationMs: Date.now() - startTime,
+        toolsScope
+      };
+    }
+
     const executionResult = await this.tradingAgent.processTask({
       id: `exec-${symbol}`,
       context: {

@@ -1,3 +1,8 @@
+// Load environment variables from config/profit-active.env
+import * as dotenv from 'dotenv';
+import * as path from 'path';
+dotenv.config({ path: path.resolve(__dirname, '../../config/profit-active.env') });
+
 import { createAgent } from './main';
 import { OHLCV } from './types';
 import { loadSymbolPolicy } from './config/symbol-policy';

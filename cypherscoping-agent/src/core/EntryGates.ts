@@ -46,7 +46,7 @@ export class EntryGates {
 
   constructor(config: GateConfig = {}) {
     this.config = {
-      enabled: config.enabled ?? false,
+      enabled: config.enabled ?? true,  // CRITICAL: Safety controls should default to enabled
       strictMode: config.strictMode ?? false,
       deadZoneMin: config.deadZoneMin ?? 20,
       thresholdScore: config.thresholdScore ?? 80,

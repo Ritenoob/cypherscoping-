@@ -247,6 +247,28 @@ export class RiskManagementAgent extends BaseAgent {
     return Math.max(0, drawdown);
   }
 
+  /**
+   * Record a trade outcome and update consecutive loss counter
+   * @param pnlPercent - The PnL percentage of the trade
+   */
+  public recordTradeOutcome(pnlPercent: number): void {
+    if (pnlPercent < 0) {
+      this.positionMetrics.consecutiveLosses++;
+    } else if (pnlPercent > 0) {
+      this.positionMetrics.consecutiveLosses = 0;
+    }
+    // Note: Break-even trades (pnlPercent === 0) do not reset the counter
+  }
+
+  /**
+   * Check if trading should be stopped due to consecutive losses
+   * @param maxConsecutiveLosses - Maximum allowed consecutive losses
+   * @returns true if consecutive losses exceed the maximum
+   */
+  public shouldStopTrading(maxConsecutiveLosses: number = 5): boolean {
+    return this.positionMetrics.consecutiveLosses >= maxConsecutiveLosses;
+  }
+
   private generateRecommendations(context: AgentContext, analysis: RiskAnalysis): RiskRecommendation[] {
     const recommendations: RiskRecommendation[] = [];
 

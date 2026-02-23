@@ -121,7 +121,6 @@ export class SignalGenerator {
 
     if (williamsR) {
       const wrSignals = williamsR.signals || [];
-      allSignals.push(...wrSignals);
 
       for (const signal of wrSignals) {
         const weight = V6_OPTIMIZED_WEIGHTS.WilliamsR?.weight || 28;
@@ -335,7 +334,7 @@ export class SignalGenerator {
       if (signal.type.includes('squeeze')) return 'squeeze';
       if (signal.type.includes('golden_death') || signal.type.includes('death_cross')) return 'golden_death_cross';
     }
-    return 'trend';
+    return null;
   }
 
   private checkTrendAlignment(results: IndicatorResults, score: number, context: any): boolean {

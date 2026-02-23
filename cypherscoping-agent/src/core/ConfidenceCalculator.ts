@@ -19,7 +19,7 @@ export class ConfidenceCalculator {
 
   constructor(config: ConfidenceConfig = {}) {
     this.config = {
-      enabled: config.enabled ?? false,
+      enabled: config.enabled ?? true,  // CRITICAL: Safety controls should default to enabled
       chopPenalty: config.chopPenalty ?? 5,
       volPenaltyHigh: config.volPenaltyHigh ?? 6,
       volPenaltyMedium: config.volPenaltyMedium ?? 3,

@@ -760,7 +760,9 @@ export class SignalAnalysisAgent extends BaseAgent {
       reasons.add('regime_mismatch');
     }
 
-    const hasRecentLoss = context.positions.some((p) => p.symbol === context.symbol && p.pnlPercent <= -3);
+    // CRITICAL FIX: Trigger cooldown on ANY loss, not just -3%+ losses
+    // Previous threshold (-3%) never triggered for -1% stop losses
+    const hasRecentLoss = context.positions.some((p) => p.symbol === context.symbol && p.pnlPercent < 0);
     if (hasRecentLoss) {
       this.symbolCooldownUntil.set(context.symbol, now + this.qualityConfig.lossCooldownMs);
     }
