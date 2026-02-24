@@ -24,31 +24,57 @@ export interface TradeFlow {
 export interface IndicatorResult {
   name: string;
   value: number;
-  signal: 'bullish' | 'bearish' | 'neutral';
+  signal: "bullish" | "bearish" | "neutral";
   score: number;
   details?: Record<string, any>;
+}
+
+export type ScoreTier =
+  | "EXTREME_BUY"
+  | "STRONG_BUY"
+  | "BUY"
+  | "NEUTRAL"
+  | "SELL"
+  | "STRONG_SELL"
+  | "EXTREME_SELL";
+
+export interface NormalizedCompositeSignal {
+  normalizedScore: number;
+  normalizedTier: ScoreTier;
+  normalizedConfidence: number;
+  signalPriorityBreakdown: Record<string, number>;
+  strengthMultipliersUsed: Record<string, number>;
 }
 
 export interface CompositeSignal {
   compositeScore: number;
   authorized: boolean;
-  side: 'long' | 'short' | null;
+  side: "long" | "short" | null;
   confidence: number;
   triggerCandle: number | null;
   windowExpires: number | null;
-  indicatorScores: Record<string, number>;  // Changed from Map to plain object for JSON serialization
+  indicatorScores: Record<string, number>;
   microstructureScore: number;
   blockReasons: string[];
   confirmations: number;
   timestamp: number;
-  signalStrength?: 'extreme' | 'strong' | 'moderate' | 'weak' | null;
-  signalType?: 'divergence' | 'crossover' | 'squeeze' | 'golden_death_cross' | 'trend' | 'oversold' | 'overbought' | null;
+  signalStrength?: "extreme" | "strong" | "moderate" | "weak" | null;
+  signalType?:
+    | "divergence"
+    | "crossover"
+    | "squeeze"
+    | "golden_death_cross"
+    | "trend"
+    | "oversold"
+    | "overbought"
+    | null;
   signalSource?: string;
+  normalizedResult?: NormalizedCompositeSignal;
 }
 
 export interface Position {
   symbol: string;
-  side: 'long' | 'short';
+  side: "long" | "short";
   entryPrice: number;
   size: number;
   leverage: number;
@@ -69,14 +95,14 @@ export interface RiskParameters {
 }
 
 export interface AIAnalysis {
-  recommendation: 'buy' | 'sell' | 'hold';
+  recommendation: "buy" | "sell" | "hold";
   confidence: number;
   reasoning: string[];
-  riskAssessment: 'low' | 'medium' | 'high';
-  marketRegime: 'trending' | 'ranging' | 'volatile';
+  riskAssessment: "low" | "medium" | "high";
+  marketRegime: "trending" | "ranging" | "volatile";
   suggestedAction: {
-    type: 'entry' | 'exit' | 'adjust' | 'wait';
-    side?: 'long' | 'short';
+    type: "entry" | "exit" | "adjust" | "wait";
+    side?: "long" | "short";
     size?: number;
     leverage?: number;
   };
@@ -109,7 +135,7 @@ export interface AgentResult {
   errorCode?: string;
   meta?: {
     durationMs?: number;
-    toolsScope?: 'restricted' | 'all';
+    toolsScope?: "restricted" | "all";
   };
   error?: string;
 }
@@ -124,11 +150,11 @@ export interface OHLCVWithIndex extends OHLCV {
   index: number;
 }
 
-export type TradingMode = 'paper' | 'live';
+export type TradingMode = "paper" | "live";
 
 export interface AlertNotification {
   id: string;
-  type: 'entry' | 'exit' | 'warning' | 'info';
+  type: "entry" | "exit" | "warning" | "info";
   symbol: string;
   message: string;
   timestamp: number;
@@ -145,8 +171,8 @@ export interface CooldownState {
 export interface OrderRequest {
   id: string;
   symbol: string;
-  side: 'buy' | 'sell';
-  type: 'market' | 'limit' | 'stop';
+  side: "buy" | "sell";
+  type: "market" | "limit" | "stop";
   size: number;
   price?: number;
   leverage: number;
