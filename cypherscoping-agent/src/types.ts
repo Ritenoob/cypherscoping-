@@ -36,7 +36,7 @@ export interface CompositeSignal {
   confidence: number;
   triggerCandle: number | null;
   windowExpires: number | null;
-  indicatorScores: Map<string, number>;
+  indicatorScores: Record<string, number>;  // Changed from Map to plain object for JSON serialization
   microstructureScore: number;
   blockReasons: string[];
   confirmations: number;

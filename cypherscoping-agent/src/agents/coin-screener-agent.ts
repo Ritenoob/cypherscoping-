@@ -3,6 +3,7 @@ import Bottleneck from 'bottleneck';
 import { BaseAgent } from './base-agent';
 import { AgentContext, AgentResult, OHLCV, CompositeSignal } from '../types';
 import { loadSymbolPolicy, validateSymbolPolicy } from '../config/symbol-policy';
+import { SignalAnalysisAgent } from './signal-analysis-agent';
 
 export class CoinScreenerAgent extends BaseAgent {
   private symbols: string[] = [];
@@ -10,6 +11,7 @@ export class CoinScreenerAgent extends BaseAgent {
   private readonly maxConcurrentScans: number = 5;
   private provider: MarketDataProvider;
   private symbolsInitialized: boolean = false;
+  private signalAgent: SignalAnalysisAgent;
 
   constructor(symbols?: string[]) {
     super({
@@ -37,10 +39,12 @@ export class CoinScreenerAgent extends BaseAgent {
     // Otherwise, symbols will be fetched dynamically during initialize()
 
     this.provider = this.createDataProvider();
+    this.signalAgent = new SignalAnalysisAgent();
   }
 
   async initialize(): Promise<void> {
     await this.provider.connect();
+    await this.signalAgent.initialize();
 
     // Fetch dynamic symbols if not already initialized
     if (!this.symbolsInitialized) {
@@ -50,6 +54,9 @@ export class CoinScreenerAgent extends BaseAgent {
 
   private async initializeSymbols(): Promise<void> {
     const symbolPolicy = loadSymbolPolicy();
+
+    console.log('[CoinScreener] Initializing symbols...');
+    console.log(`[CoinScreener] TRADING_UNIVERSE env var: ${process.env.TRADING_UNIVERSE || 'NOT SET'}`);
 
     // Check for manual override via TRADING_UNIVERSE env var
     if (process.env.TRADING_UNIVERSE && process.env.TRADING_UNIVERSE.trim().length > 0) {
@@ -64,16 +71,25 @@ export class CoinScreenerAgent extends BaseAgent {
       const allSymbols = await this.provider.fetchActiveSymbols();
       console.log(`[CoinScreener] Found ${allSymbols.length} active perpetual futures markets`);
 
-      // Apply symbol policy filtering
+      // Apply ONLY denylist filtering (not tradingUniverse)
+      // When fetching all perpetuals, we want all of them except denied symbols
+      const denylistCanonical = new Set(symbolPolicy.denylistSymbols.map(s => {
+        const canonical = s.trim().toUpperCase().replace(/[-_:]/g, '/').replace(/\//g, '');
+        if (canonical === 'BTCUSDT' || canonical === 'BTCUSDTM') return 'BTCUSDTM';
+        if (canonical === 'XBTUSDT' || canonical === 'XBTUSDTM') return 'XBTUSDTM';
+        return canonical;
+      }));
+
       this.symbols = allSymbols.filter((symbol) => {
-        const validation = validateSymbolPolicy(symbol, symbolPolicy);
-        if (!validation.allowed && validation.code === 'E_SYMBOL_DENIED') {
+        const canonical = symbol.trim().toUpperCase();
+        const isDenied = denylistCanonical.has(canonical);
+        if (isDenied) {
           console.log(`[CoinScreener] Filtering out denied symbol: ${symbol}`);
         }
-        return validation.allowed;
+        return !isDenied;
       });
 
-      console.log(`[CoinScreener] After policy filtering: ${this.symbols.length} allowed symbols`);
+      console.log(`[CoinScreener] After denylist filtering: ${this.symbols.length} allowed symbols`);
     }
 
     if (this.symbols.length === 0) {
@@ -164,10 +180,19 @@ export class CoinScreenerAgent extends BaseAgent {
 
   private async scanSymbol(symbol: string): Promise<ScreenerResult | null> {
     try {
+      // Symbol validation already done during initialization
+      // Only check denylist as a safety check
       const symbolPolicy = loadSymbolPolicy();
-      const validation = validateSymbolPolicy(symbol, symbolPolicy);
-      if (!validation.allowed) {
-        console.warn(`[CoinScreener] ${validation.code}: ${validation.reason}`);
+      const canonical = symbol.trim().toUpperCase();
+      const denylistCanonical = new Set(symbolPolicy.denylistSymbols.map(s => {
+        const c = s.trim().toUpperCase().replace(/[-_:]/g, '/').replace(/\//g, '');
+        if (c === 'BTCUSDT' || c === 'BTCUSDTM') return 'BTCUSDTM';
+        if (c === 'XBTUSDT' || c === 'XBTUSDTM') return 'XBTUSDTM';
+        return c;
+      }));
+
+      if (denylistCanonical.has(canonical)) {
+        console.warn(`[CoinScreener] Symbol ${symbol} is in denylist`);
         return null;
       }
 
@@ -176,7 +201,29 @@ export class CoinScreenerAgent extends BaseAgent {
         return null;
       }
 
-      const signal = await this.generateSignal(marketData.ohlcv);
+      // Use SignalAnalysisAgent for full indicator analysis (RSI, Williams %R, MACD, etc.)
+      const context: AgentContext = {
+        symbol,
+        correlationId: `screener-${symbol}-${Date.now()}`,
+        timeframe: '30min',
+        balance: 10000,
+        positions: [],
+        openOrders: [],
+        isLiveMode: false,
+        executionOptions: {
+          allToolsAllowed: false,
+          optimizeExecution: true,
+          enabledTools: ['signal-analysis']
+        },
+        marketData: {
+          ohlcv: marketData.ohlcv,
+          orderBook: marketData.orderBook,
+          tradeFlow: marketData.tradeFlow
+        }
+      };
+
+      const signalResult = await this.signalAgent.execute(context);
+      const signal = signalResult.signal || this.createEmptySignal();
       const regime = this.detectRegime(marketData.ohlcv);
       const score = this.calculateOverallScore(signal, regime);
 
@@ -203,76 +250,38 @@ export class CoinScreenerAgent extends BaseAgent {
     return this.provider.fetch(symbol, '30min', 120);
   }
 
-  private async generateSignal(ohlcv: OHLCV[]): Promise<CompositeSignal> {
-    const closes = ohlcv.map((c) => c.close);
-    const rsi = this.calculateRSI(closes, 14);
-    const williamsR = this.calculateWilliamsR(ohlcv);
-    const trend = this.calculateTrend(closes);
-
-    let score = 0;
-    let side: 'long' | 'short' | null = null;
-
-    if (williamsR < -80 && rsi < 40) {
-      score += 50;
-      side = 'long';
-    } else if (williamsR > -20 && rsi > 60) {
-      score -= 50;
-      side = 'short';
-    }
-
-    if (trend === 'up') score += 20;
-    else if (trend === 'down') score -= 20;
-
+  private createEmptySignal(): CompositeSignal {
     return {
-      compositeScore: score,
-      authorized: Math.abs(score) >= 75,
-      side,
-      confidence: Math.min(100, Math.abs(score) + 20),
+      compositeScore: 0,
+      authorized: false,
+      side: null,
+      confidence: 0,
       triggerCandle: null,
       windowExpires: null,
-      indicatorScores: new Map(),
+      indicatorScores: {},
       microstructureScore: 0,
       blockReasons: [],
       confirmations: 0,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      signalStrength: null,
+      signalType: null,
+      signalSource: 'CoinScreener'
     };
   }
 
-  private calculateRSI(closes: number[], period: number): number {
-    const changes = closes.slice(1).map((c, i) => c - closes[i]);
-    const gains = changes.map((c) => (c > 0 ? c : 0));
-    const losses = changes.map((c) => (c < 0 ? -c : 0));
-
-    const avgGain = gains.slice(-period).reduce((a, b) => a + b, 0) / period;
-    const avgLoss = losses.slice(-period).reduce((a, b) => a + b, 0) / period;
-
-    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    return 100 - 100 / (1 + rs);
-  }
-
-  private calculateWilliamsR(ohlcv: OHLCV[]): number {
-    const period = 14;
-    const highs = ohlcv.slice(-period).map((c) => c.high);
-    const lows = ohlcv.slice(-period).map((c) => c.low);
-    const closes = ohlcv.slice(-period).map((c) => c.close);
-
-    const highest = Math.max(...highs);
-    const lowest = Math.min(...lows);
-    const latestClose = closes[closes.length - 1];
-    const denom = highest - lowest;
-    if (denom === 0) return -50;
-
-    return ((highest - latestClose) / denom) * -100;
-  }
-
-  private calculateTrend(closes: number[]): 'up' | 'down' | 'neutral' {
-    const sma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-    const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
-
-    if (closes[closes.length - 1] > sma20 && sma20 > sma50) return 'up';
-    if (closes[closes.length - 1] < sma20 && sma20 < sma50) return 'down';
-    return 'neutral';
-  }
+  // ===================================================================
+  // NOTE: generateSignal(), calculateRSI(), calculateWilliamsR(), and
+  // calculateTrend() methods have been REMOVED.
+  //
+  // The CoinScreenerAgent now uses SignalAnalysisAgent.execute() for
+  // all indicator analysis. This ensures:
+  // 1. All 18 indicators are used (not just RSI + Williams %R)
+  // 2. Divergence and crossover detection works
+  // 3. No duplicate code to maintain
+  // 4. indicatorScores is properly populated
+  //
+  // See: cypherscoping-agent/docs/SCREENER_INDICATOR_INTEGRATION_ERROR.md
+  // ===================================================================
 
   private detectRegime(ohlcv: OHLCV[]): 'trending' | 'ranging' | 'volatile' {
     const closes = ohlcv.map((c) => c.close);

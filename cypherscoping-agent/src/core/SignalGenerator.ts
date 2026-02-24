@@ -2,6 +2,7 @@ import { V6_OPTIMIZED_WEIGHTS, getSignalClassification, getRecommendedLeverage, 
 import { WilliamsRIndicator, WilliamsRResult, SignalResult } from '../indicators/WilliamsRIndicator';
 import { EntryGates, GateContext, GateResult } from './EntryGates';
 import { ConfidenceCalculator, ConfidenceContext } from './ConfidenceCalculator';
+import { CompositeSignal } from '../types';
 
 export interface IndicatorResults {
   williamsR?: WilliamsRResult;
@@ -11,23 +12,6 @@ export interface IndicatorResults {
     score: number;
     signals?: SignalResult[];
   } | WilliamsRResult | undefined;
-}
-
-export interface CompositeSignal {
-  compositeScore: number;
-  authorized: boolean;
-  side: 'long' | 'short' | null;
-  confidence: number;
-  triggerCandle: number | null;
-  windowExpires: number | null;
-  indicatorScores: Map<string, number>;
-  microstructureScore: number;
-  blockReasons: string[];
-  confirmations: number;
-  timestamp: number;
-  signalStrength: 'extreme' | 'strong' | 'moderate' | 'weak' | null;
-  signalType: 'divergence' | 'crossover' | 'squeeze' | 'golden_death_cross' | 'trend' | 'oversold' | 'overbought' | null;
-  signalSource: string;
 }
 
 export interface SignalGeneratorConfig {
@@ -262,6 +246,12 @@ export class SignalGenerator {
 
     const signalStrength = this.getSignalStrength(classification, allSignals, divergenceCount);
 
+    // Convert Map to plain object for JSON serialization
+    const indicatorScoresObj: Record<string, number> = {};
+    Object.entries(results).forEach(([name, data]) => {
+      indicatorScoresObj[name] = (data as any).score || 0;
+    });
+
     return {
       compositeScore: totalScore,
       authorized: isAuthorized,
@@ -269,9 +259,7 @@ export class SignalGenerator {
       confidence,
       triggerCandle,
       windowExpires,
-       indicatorScores: new Map(
-         Object.entries(results).map(([name, data]) => [name, (data as any).score || 0])
-       ),
+      indicatorScores: indicatorScoresObj,
       microstructureScore,
       blockReasons: gateResult.reasons,
       confirmations: allSignals.length,

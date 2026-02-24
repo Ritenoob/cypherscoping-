@@ -308,7 +308,7 @@ export class RiskManagementAgent extends BaseAgent {
     const { openPositions } = analysis.positionMetrics;
     for (const pos of context.positions) {
       if (!pos.stopLoss) {
-        const slPrice = this.calculateStopLoss(pos, analysis.signal || { compositeScore: 0, authorized: false, side: null, confidence: 0, triggerCandle: null, windowExpires: null, indicatorScores: new Map(), microstructureScore: 0, blockReasons: [], confirmations: 0, timestamp: Date.now(), signalStrength: null, signalType: null, signalSource: '' });
+        const slPrice = this.calculateStopLoss(pos, analysis.signal || { compositeScore: 0, authorized: false, side: null, confidence: 0, triggerCandle: null, windowExpires: null, indicatorScores: {}, microstructureScore: 0, blockReasons: [], confirmations: 0, timestamp: Date.now(), signalStrength: null, signalType: null, signalSource: '' });
         recommendations.push({
           priority: 'HIGH',
           type: 'set-stop-loss',
@@ -321,7 +321,7 @@ export class RiskManagementAgent extends BaseAgent {
       }
 
       if (!pos.takeProfit) {
-        const tpPrice = this.calculateTakeProfit(pos, analysis.signal || { compositeScore: 0, authorized: false, side: null, confidence: 0, triggerCandle: null, windowExpires: null, indicatorScores: new Map(), microstructureScore: 0, blockReasons: [], confirmations: 0, timestamp: Date.now(), signalStrength: null, signalType: null, signalSource: '' });
+        const tpPrice = this.calculateTakeProfit(pos, analysis.signal || { compositeScore: 0, authorized: false, side: null, confidence: 0, triggerCandle: null, windowExpires: null, indicatorScores: {}, microstructureScore: 0, blockReasons: [], confirmations: 0, timestamp: Date.now(), signalStrength: null, signalType: null, signalSource: '' });
         recommendations.push({
           priority: 'MEDIUM',
           type: 'set-take-profit',

@@ -189,8 +189,18 @@ export class SignalAnalysisAgent extends BaseAgent {
     const closes = indexedOHLCV.map(c => c.close);
     const volumes = indexedOHLCV.map(c => c.volume);
 
+    // Reset Williams %R state before processing new symbol
+    this.williamsR.reset();
+
+    // Update Williams %R with all candles before getting results
+    for (const candle of candles) {
+      this.williamsR.update(candle);
+    }
+
+    const wrResult = this.williamsR.getResult();
+
     const indicatorResults = {
-      williamsR: this.williamsR.getResult(),
+      williamsR: wrResult,
       rsi: this.rsiIndicator.calculate(closes, 21),
       stochRSI: this.stochasticRSIIndicator.calculate(closes, 14, 14, 3, 3),
       macd: this.macdIndicator.calculate(closes, 12, 26, 9),

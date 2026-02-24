@@ -34,7 +34,8 @@ export class CypherScopeOrchestrator {
     this.riskAgent = new RiskManagementAgent();
     this.symbolPolicy = loadSymbolPolicy();
     this.tradingAgent = new TradingExecutorAgent();
-    this.screenerAgent = new CoinScreenerAgent(this.symbolPolicy.tradingUniverse);
+    // Initialize screener WITHOUT symbols to enable dynamic fetching of all 530+ perpetuals
+    this.screenerAgent = new CoinScreenerAgent();
     this.auditLogger = new AuditLogger();
     this.executionOptions = {
       allToolsAllowed: options.allToolsAllowed ?? false,
@@ -366,7 +367,7 @@ export class CypherScopeOrchestrator {
       confidence: 0,
       triggerCandle: null,
       windowExpires: null,
-      indicatorScores: new Map(),
+      indicatorScores: {},  // Changed from new Map() to plain object
       microstructureScore: 0,
       blockReasons: [],
       confirmations: 0,
